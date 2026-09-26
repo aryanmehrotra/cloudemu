@@ -9621,6 +9621,32 @@
         ]
       },
       {
+        "name": "GCPBackendBucketStore",
+        "doc": "GCPBackendBucketStore is an OPTIONAL, type-asserted capability implemented",
+        "operations": [
+          {
+            "name": "DeleteGCPBackendBucket",
+            "doc": "DeleteGCPBackendBucket removes the named backend bucket, returning"
+          },
+          {
+            "name": "GetGCPBackendBucket",
+            "doc": "GetGCPBackendBucket returns the named backend bucket, or NotFound."
+          },
+          {
+            "name": "InsertGCPBackendBucket",
+            "doc": "InsertGCPBackendBucket stores res, returning AlreadyExists when a backend"
+          },
+          {
+            "name": "ListGCPBackendBuckets",
+            "doc": "ListGCPBackendBuckets returns every backend bucket."
+          },
+          {
+            "name": "UpdateGCPBackendBucket",
+            "doc": "UpdateGCPBackendBucket applies mutate to the named backend bucket under"
+          }
+        ]
+      },
+      {
         "name": "GCPBackendServicePatcher",
         "doc": "GCPBackendServicePatcher is an OPTIONAL, type-asserted capability implemented",
         "operations": [

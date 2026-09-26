@@ -31,6 +31,7 @@ var resourceKind = map[string]string{
 	resourceHealthChecks:         "compute#healthCheck",
 	resourceTargetPools:          "compute#targetPool",
 	resourceURLMaps:              "compute#urlMap",
+	resourceBackendBuckets:       "compute#backendBucket",
 	resourceTargetHTTPProxies:    "compute#targetHttpProxy",
 	resourceTargetHTTPSProxies:   "compute#targetHttpsProxy",
 	resourceSslCertificates:      "compute#sslCertificate",
@@ -215,6 +216,14 @@ func (h *Handler) listGCPResource(w http.ResponseWriter, r *http.Request, rp gcp
 		return
 	}
 
+	writeGCPResourceList(w, r, rp, items)
+}
+
+// writeGCPResourceList filters (name), sorts, paginates (maxResults/pageToken)
+// and writes a compute#…List envelope over items of rp's collection.
+//
+//nolint:gocritic // rp is a request-scoped value
+func writeGCPResourceList(w http.ResponseWriter, r *http.Request, rp gcprest.ResourcePath, items []lbdriver.GCPResource) {
 	filter := r.URL.Query().Get("filter")
 
 	matched := make([]lbdriver.GCPResource, 0, len(items))

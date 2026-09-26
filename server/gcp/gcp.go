@@ -485,6 +485,12 @@ func New(d Drivers) *server.Server {
 	if d.LB != nil {
 		lbH := lbsrv.New(d.LB)
 		lbH.SetOperationRegistry(computeOps)
+
+		if d.Storage != nil {
+			// backendBuckets reject a bucketName naming no existing GCS bucket.
+			lbH.SetBucketLister(d.Storage)
+		}
+
 		srv.Register(lbH)
 	}
 

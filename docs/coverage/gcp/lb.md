@@ -31,6 +31,18 @@ GCP's `loadbalancer` service · portable interface `driver.LoadBalancer` · [GCP
 
 Discovered by type assertion; only some providers implement these.
 
+### GCPBackendBucketStore
+
+GCPBackendBucketStore is an OPTIONAL, type-asserted capability implemented
+
+| Operation | Description |
+| --- | --- |
+| `DeleteGCPBackendBucket` | DeleteGCPBackendBucket removes the named backend bucket, returning |
+| `GetGCPBackendBucket` | GetGCPBackendBucket returns the named backend bucket, or NotFound. |
+| `InsertGCPBackendBucket` | InsertGCPBackendBucket stores res, returning AlreadyExists when a backend |
+| `ListGCPBackendBuckets` | ListGCPBackendBuckets returns every backend bucket. |
+| `UpdateGCPBackendBucket` | UpdateGCPBackendBucket applies mutate to the named backend bucket under |
+
 ### GCPBackendServicePatcher
 
 GCPBackendServicePatcher is an OPTIONAL, type-asserted capability implemented
