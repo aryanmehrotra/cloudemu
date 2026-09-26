@@ -166,6 +166,16 @@ func (h *Handler) routeAddresses(w http.ResponseWriter, r *http.Request, rp gcpr
 		return
 	}
 
+	if rp.Action != "" {
+		if rp.Action == setLabelsAction && r.Method == http.MethodPost {
+			h.setAddressLabels(w, r, rp)
+		} else {
+			gcprest.WriteError(w, http.StatusMethodNotAllowed, "methodNotAllowed", "method not allowed")
+		}
+
+		return
+	}
+
 	switch r.Method {
 	case http.MethodGet:
 		h.getAddress(w, r, rp)
@@ -223,6 +233,7 @@ func (h *Handler) enrichAddress(raw json.RawMessage, rp gcprest.ResourcePath, ho
 	body["status"] = "RESERVED"
 	body["selfLink"] = gcprest.SelfLink(host, rp.Project, rp.Scope, rp.ScopeName, resourceAddresses, name)
 	body["creationTimestamp"] = nowRFC3339()
+	body["labelFingerprint"] = addressLabelFingerprint(addressLabels(raw))
 
 	if addr, ok := body["address"].(string); !ok || addr == "" {
 		body["address"] = h.addresses.allocIP()
@@ -264,7 +275,7 @@ func (h *Handler) listAddresses(w http.ResponseWriter, r *http.Request, rp gcpre
 	items := make([]json.RawMessage, 0, len(all))
 
 	for _, body := range all {
-		if nameMatches(filter, rawName(body)) {
+		if addressMatches(filter, body) {
 			items = append(items, reflectAddressUsage(body, usersByIP))
 		}
 	}
@@ -307,7 +318,7 @@ func (h *Handler) aggregatedListAddresses(w http.ResponseWriter, r *http.Request
 		list := make([]json.RawMessage, 0, len(bodies))
 
 		for _, b := range bodies {
-			if nameMatches(filter, rawName(b)) {
+			if addressMatches(filter, b) {
 				list = append(list, reflectAddressUsage(b, usersByIP))
 			}
 		}

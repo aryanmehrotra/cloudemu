@@ -218,7 +218,7 @@ All handlers speak REST + JSON.
 | Service | Operations |
 |---------|-----------|
 | **Compute Engine** | Instances + Disks + Snapshots + Images: insert/get/list/delete with LRO envelopes |
-| **Networks** | VPCs, Subnetworks, Firewalls, Routes |
+| **Networks** | VPCs, Subnetworks, Firewalls, Routes; regional + global Addresses (insert/get/list/aggregatedList/delete, `setLabels` replacing the label set under `labelFingerprint` with 412 `conditionNotMet` on a missing/stale fingerprint, list `filter` on `name` and `labels.<key>=<value>`) |
 | **Cloud Storage (GCS)** | Buckets + Objects: create/get/list/delete, upload, download, copy |
 | **Firestore** | Documents + Collections via `:commit`, `:batchGet`, `:runQuery` |
 | **Cloud Monitoring** | Time-series ingest/read, alert policies |
