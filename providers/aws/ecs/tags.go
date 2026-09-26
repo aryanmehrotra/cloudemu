@@ -75,6 +75,21 @@ func (m *Mock) ListTagsForResource(_ context.Context, resourceARN string) ([]dri
 	return nil, apiErrf(errors.NotFound, excClient, "resource %q not found", resourceARN)
 }
 
+// liveTags returns a resource's current tags. The tag store keyed by ARN is
+// the single authority: every create path seeds it via recordTags and
+// TagResource/UntagResource mutate only it, so the entity's own Tags field is a
+// create-time snapshot that goes stale after the first tag write. Describe
+// paths read through here so they agree with ListTagsForResource. fallback is
+// used only when the ARN was never recorded (e.g. a snapshot taken before the
+// resource's tags were tracked).
+func (m *Mock) liveTags(arn string, fallback []driver.Tag) []driver.Tag {
+	if tags, ok := m.tags.Get(arn); ok {
+		return copyTags(tags)
+	}
+
+	return copyTags(fallback)
+}
+
 // mergeTags upserts add into base: existing keys are overwritten in place and
 // new keys are appended, preserving order for determinism.
 func mergeTags(base, add []driver.Tag) []driver.Tag {

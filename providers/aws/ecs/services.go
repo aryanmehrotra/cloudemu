@@ -762,7 +762,9 @@ func (m *Mock) DescribeServices(ctx context.Context, cluster string, ids []strin
 
 	for _, id := range ids {
 		if s, ok := m.resolveService(want, id); ok {
-			found = append(found, cloneService(s))
+			out := cloneService(s)
+			out.Tags = m.liveTags(s.ARN, s.Tags)
+			found = append(found, out)
 			continue
 		}
 
