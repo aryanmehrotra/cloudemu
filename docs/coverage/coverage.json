@@ -10071,6 +10071,52 @@
     }
   },
   {
+    "service": "managedkafka",
+    "interface": "ManagedKafka",
+    "operations": [
+      {
+        "name": "CreateCluster"
+      },
+      {
+        "name": "CreateTopic"
+      },
+      {
+        "name": "DeleteCluster",
+        "doc": "DeleteCluster removes the cluster and every topic under it."
+      },
+      {
+        "name": "DeleteTopic"
+      },
+      {
+        "name": "GetCluster"
+      },
+      {
+        "name": "GetOperation",
+        "doc": "GetOperation resolves a (done) long-running operation by name, for a"
+      },
+      {
+        "name": "GetTopic"
+      },
+      {
+        "name": "ListClusters"
+      },
+      {
+        "name": "ListTopics"
+      },
+      {
+        "name": "UpdateCluster",
+        "doc": "UpdateCluster applies the fields of c named by mask (field-mask paths"
+      },
+      {
+        "name": "UpdateTopic",
+        "doc": "UpdateTopic applies the fields of t named by mask (\"*\" means every mutable"
+      }
+    ],
+    "providers": {
+      "gcp": "ManagedKafka"
+    }
+  },
+  {
     "service": "managedlustre",
     "interface": "provider-native",
     "operations": [

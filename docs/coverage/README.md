@@ -118,6 +118,7 @@ code does not implement. Machine-readable: [`coverage.json`](./coverage.json).
 | `managedcassandra` | - | [ManagedCassandra](./azure/managedcassandra.md) | - | - | 15 |
 | `managedgrafana` | - | [ManagedGrafana](./azure/managedgrafana.md) | - | - | 8 |
 | `managedidentity` | - | [ManagedIdentity](./azure/managedidentity.md) | - | - | 8 |
+| `managedkafka` | - | - | [ManagedKafka](./gcp/managedkafka.md) | - | 11 |
 | `managedlustre` | - | [ManagedLustre](./azure/managedlustre.md) | - | - | 12 |
 | `memorydb` | [MemoryDB](./aws/memorydb.md) | - | - | - | 33 |
 | `messagequeue` | [SQS](./aws/sqs.md) | [QueueStorage](./azure/queuestorage.md) | [PubSub](./gcp/pubsub.md) | - | 14 |

@@ -146,3 +146,53 @@ func TestAlloyDBServerOperationOwnership(t *testing.T) {
 		t.Fatalf("AlloyDB op GET: code=%d body=%s (want 200 done:true)", code, body)
 	}
 }
+
+// TestFullServerManagedKafkaSharesClustersWithGKE covers the one location
+// collection two services claim on the same assembled server: Managed Kafka and
+// GKE both serve /v1/projects/{p}/locations/{l}/clusters. Kafka registers first
+// and claims only its own traffic, so GKE creates/lists still reach GKE, Kafka
+// clusters are served by Kafka, and a Kafka cluster operation is resolved by the
+// shared LRO poller (with its typed response), not by GKE's operations route.
+func TestFullServerManagedKafkaSharesClustersWithGKE(t *testing.T) {
+	ts := fullServer(t)
+
+	const base = "/v1/projects/demo/locations/us-central1/clusters"
+
+	// GKE create (a CreateClusterRequest wrapping {"cluster": …}) reaches GKE.
+	if code, body := do(t, ts, http.MethodPost, base, `{"cluster":{"name":"gke1","initialNodeCount":1}}`); code != http.StatusOK {
+		t.Fatalf("GKE create: code=%d body=%s", code, body)
+	}
+
+	// With no Kafka clusters in the location, the list is GKE's.
+	if code, body := do(t, ts, http.MethodGet, base, ""); code != http.StatusOK || !strings.Contains(body, "gke1") {
+		t.Fatalf("GKE list before Kafka: code=%d body=%s", code, body)
+	}
+
+	kafkaBody := `{"capacityConfig":{"vcpuCount":"3","memoryBytes":"3221225472"},` +
+		`"gcpConfig":{"accessConfig":{"networkConfigs":[{"subnet":"projects/demo/regions/us-central1/subnetworks/s"}]}}}`
+
+	code, createBody := do(t, ts, http.MethodPost, base+"?clusterId=kafka1", kafkaBody)
+	if code != http.StatusOK || !strings.Contains(createBody, "google.cloud.managedkafka.v1.Cluster") {
+		t.Fatalf("Kafka create: code=%d body=%s", code, createBody)
+	}
+
+	op := "/v1/" + opName(t, createBody)
+	if code, body := do(t, ts, http.MethodGet, op, ""); code != http.StatusOK ||
+		!strings.Contains(body, `"done":true`) || !strings.Contains(body, "managedkafka.v1.Cluster") {
+		t.Fatalf("Kafka op GET via shared poller: code=%d body=%s", code, body)
+	}
+
+	// Each item is served by its owner.
+	if code, body := do(t, ts, http.MethodGet, base+"/kafka1", ""); code != http.StatusOK || !strings.Contains(body, "capacityConfig") {
+		t.Fatalf("Kafka get: code=%d body=%s", code, body)
+	}
+
+	if code, body := do(t, ts, http.MethodGet, base+"/gke1", ""); code != http.StatusOK || strings.Contains(body, "capacityConfig") {
+		t.Fatalf("GKE get: code=%d body=%s", code, body)
+	}
+
+	// A bogus operation in the same location still 404s.
+	if code, _ := do(t, ts, http.MethodGet, "/v1/projects/demo/locations/us-central1/operations/nope", ""); code != http.StatusNotFound {
+		t.Fatalf("bogus op GET: code=%d, want 404", code)
+	}
+}

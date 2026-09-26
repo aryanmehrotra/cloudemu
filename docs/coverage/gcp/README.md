@@ -44,6 +44,7 @@ Services cloudemu emulates for GCP, by native name. Back to the [cross-provider 
 | [KMS](./kms.md) | (provider-native) | 17 |
 | [LB](./lb.md) | `loadbalancer` | 19 |
 | [LRO](./lro.md) | (provider-native) | 1 |
+| [ManagedKafka](./managedkafka.md) | `managedkafka` | 11 |
 | [Memorystore](./memorystore.md) | `cache` | 17 |
 | [Metastore](./metastore.md) | `metastore` | 6 |
 | [NetworkConnectivity](./networkconnectivity.md) | `networkconnectivity` | 11 |
