@@ -17,6 +17,7 @@ import (
 	alloydbsrv "github.com/stackshy/cloudemu/v2/server/gcp/alloydb"
 	apigatewaysrv "github.com/stackshy/cloudemu/v2/server/gcp/apigateway"
 	"github.com/stackshy/cloudemu/v2/server/gcp/artifactregistry"
+	backupdrsrv "github.com/stackshy/cloudemu/v2/server/gcp/backupdr"
 	bigqueryserver "github.com/stackshy/cloudemu/v2/server/gcp/bigquery"
 	bigtableserver "github.com/stackshy/cloudemu/v2/server/gcp/bigtable"
 	binauthzsrv "github.com/stackshy/cloudemu/v2/server/gcp/binaryauthorization"
@@ -72,6 +73,7 @@ import (
 	"github.com/stackshy/cloudemu/v2/server/wire/gcprest"
 	acmdriver "github.com/stackshy/cloudemu/v2/services/accesscontextmanager/driver"
 	agdriver "github.com/stackshy/cloudemu/v2/services/apigatewaygcp/driver"
+	backupdrdriver "github.com/stackshy/cloudemu/v2/services/backupdr/driver"
 	bqdriver "github.com/stackshy/cloudemu/v2/services/bigquery/driver"
 	btdriver "github.com/stackshy/cloudemu/v2/services/bigtable/driver"
 	badriver "github.com/stackshy/cloudemu/v2/services/binaryauthorization/driver"
@@ -247,6 +249,13 @@ type Drivers struct {
 	// genuinely-Kafka traffic (content+ownership); its location-scoped operation
 	// polls are owned by the shared LRO poller.
 	ManagedKafka mkdriver.ManagedKafka
+	// BackupDR serves the backupdr.googleapis.com v1 Backup and DR backup vault
+	// control plane against the backupdr driver. Its paths live under
+	// /v1/projects/{p}/locations/{l}/backupVaults[/…]; the handler's Matches
+	// narrows on the backupVaults resource segment, so it is disjoint from every
+	// other /v1/projects/ handler, and its location-scoped operation polls are
+	// owned by the shared LRO poller.
+	BackupDR backupdrdriver.BackupDR
 	// SecureSourceManager serves the securesourcemanager.googleapis.com v1
 	// instance + repository control plane against the securesourcemanager driver.
 	// Its paths live under /v1/projects/{p}/locations/{l}/{instances|repositories}
@@ -733,6 +742,18 @@ func New(d Drivers) *server.Server {
 		cloudidsH := cloudidssrv.New(d.CloudIDS)
 		cloudidsH.SetOperationRegistry(opsReg)
 		srv.Register(cloudidsH)
+	}
+
+	// BackupDR matches /v1/projects/{p}/locations/{l}/backupVaults[/…]. Its
+	// backupVaults resource-segment guard is disjoint from every other
+	// /v1/projects/ handler, so registration order among them is unconstrained;
+	// registered after the shared LRO poller (which owns its operation polls, and
+	// which the handler's Matches yields to) and before Firestore's permissive
+	// prefix.
+	if d.BackupDR != nil {
+		backupdrH := backupdrsrv.New(d.BackupDR)
+		backupdrH.SetOperationRegistry(opsReg)
+		srv.Register(backupdrH)
 	}
 
 	// Data Fusion (datafusion.googleapis.com) shares the EXACT same instances path

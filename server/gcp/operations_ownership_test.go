@@ -196,3 +196,34 @@ func TestFullServerManagedKafkaSharesClustersWithGKE(t *testing.T) {
 		t.Fatalf("bogus op GET: code=%d, want 404", code)
 	}
 }
+
+// TestFullServerBackupDROperationsResolveThroughSharedPoller proves a Backup and
+// DR vault operation is recorded with the shared lro registry (not answered by
+// a greedy sibling handler): the poll returns done with the typed BackupVault
+// response, cancel/delete act on the real record, and a later poll 404s.
+func TestFullServerBackupDROperationsResolveThroughSharedPoller(t *testing.T) {
+	ts := fullServer(t)
+
+	code, body := do(t, ts, http.MethodPost,
+		"/v1/projects/demo/locations/us-central1/backupVaults?backupVaultId=vault-ops",
+		`{"backupMinimumEnforcedRetentionDuration":"86400s"}`)
+	if code != http.StatusOK {
+		t.Fatalf("BackupDR create: code=%d body=%s", code, body)
+	}
+
+	op := "/v1/" + opName(t, body)
+
+	code, body = do(t, ts, http.MethodGet, op, "")
+	if code != http.StatusOK || !strings.Contains(body, `"done":true`) ||
+		!strings.Contains(body, "google.cloud.backupdr.v1.BackupVault") {
+		t.Fatalf("BackupDR op GET: code=%d body=%s (want 200 done with BackupVault response)", code, body)
+	}
+
+	if code, body := do(t, ts, http.MethodDelete, op, ""); code != http.StatusOK {
+		t.Fatalf("BackupDR op delete: code=%d body=%s (want 200)", code, body)
+	}
+
+	if code, _ := do(t, ts, http.MethodGet, op, ""); code != http.StatusNotFound {
+		t.Fatalf("BackupDR op GET after delete: code=%d (want 404)", code)
+	}
+}

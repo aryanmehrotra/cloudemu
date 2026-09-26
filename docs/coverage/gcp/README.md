@@ -9,6 +9,7 @@ Services cloudemu emulates for GCP, by native name. Back to the [cross-provider 
 | [AccessContextManager](./accesscontextmanager.md) | `accesscontextmanager` | 17 |
 | [AlloyDB](./alloydb.md) | `relationaldb` | 21 |
 | [ArtifactRegistry](./artifactregistry.md) | `containerregistry` | 15 |
+| [BackupDR](./backupdr.md) | `backupdr` | 6 |
 | [BigQuery](./bigquery.md) | `bigquery` | 12 |
 | [Bigtable](./bigtable.md) | `bigtable` | 38 |
 | [BinaryAuthorization](./binaryauthorization.md) | `binaryauthorization` | 10 |

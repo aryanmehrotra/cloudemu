@@ -2060,6 +2060,39 @@
     }
   },
   {
+    "service": "backupdr",
+    "interface": "BackupDR",
+    "operations": [
+      {
+        "name": "CreateBackupVault",
+        "doc": "CreateBackupVault creates a vault; the retention duration is required."
+      },
+      {
+        "name": "DeleteBackupVault",
+        "doc": "DeleteBackupVault deletes a vault, honoring force, allowMissing and etag."
+      },
+      {
+        "name": "GetBackupVault",
+        "doc": "GetBackupVault returns one vault by identity."
+      },
+      {
+        "name": "GetOperation",
+        "doc": "GetOperation resolves a (done) long-running operation by name, for a"
+      },
+      {
+        "name": "ListBackupVaults",
+        "doc": "ListBackupVaults lists a project's vaults in a location (\"-\" for every location)."
+      },
+      {
+        "name": "UpdateBackupVault",
+        "doc": "UpdateBackupVault applies a field-masked update and rotates the etag."
+      }
+    ],
+    "providers": {
+      "gcp": "BackupDR"
+    }
+  },
+  {
     "service": "bastion",
     "interface": "BastionHosts",
     "operations": [

@@ -12,6 +12,7 @@ import (
 	"github.com/stackshy/cloudemu/v2/providers/gcp/alloydb"
 	apigatewayprov "github.com/stackshy/cloudemu/v2/providers/gcp/apigateway"
 	"github.com/stackshy/cloudemu/v2/providers/gcp/artifactregistry"
+	backupdrprov "github.com/stackshy/cloudemu/v2/providers/gcp/backupdr"
 	"github.com/stackshy/cloudemu/v2/providers/gcp/bigquery"
 	"github.com/stackshy/cloudemu/v2/providers/gcp/bigtable"
 	"github.com/stackshy/cloudemu/v2/providers/gcp/binaryauthorization"
@@ -122,6 +123,7 @@ type Provider struct {
 	VPCAccess            *vpcaccessprov.Mock
 	CloudIDS             *cloudidsprov.Mock
 	ManagedKafka         *managedkafkaprov.Mock
+	BackupDR             *backupdrprov.Mock
 	SecureSourceManager  *securesourcemanagerprov.Mock
 	NetworkConnectivity  *networkconnectivity.Mock
 	Composer             *composer.Mock
@@ -193,6 +195,7 @@ func New(opts ...config.Option) *Provider {
 		VPCAccess:            vpcaccessprov.New(o),
 		CloudIDS:             cloudidsprov.New(o),
 		ManagedKafka:         managedkafkaprov.New(o),
+		BackupDR:             backupdrprov.New(o),
 		SecureSourceManager:  securesourcemanagerprov.New(o),
 		NetworkConnectivity:  networkconnectivity.New(o),
 		Composer:             composer.New(o),
