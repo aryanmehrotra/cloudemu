@@ -254,6 +254,13 @@ func (h *Handler) validateForwardingRuleTarget(ctx context.Context, rp gcprest.R
 		return nil
 	}
 
+	// A PSC service-attachment target names a producer resource the emulator
+	// does not model, so it is accepted unvalidated (targetCollectionFor does not
+	// recognize it); a Google APIs bundle is only valid on a global rule.
+	if err := validatePSCTarget(rp, target); err != nil {
+		return err
+	}
+
 	collection := targetCollectionFor(target)
 	if collection == "" {
 		return nil

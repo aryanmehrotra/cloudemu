@@ -107,6 +107,8 @@ type forwardingRuleRequest struct {
 	Target              string `json:"target,omitempty"`
 	BackendService      string `json:"backendService,omitempty"`
 	LoadBalancingScheme string `json:"loadBalancingScheme,omitempty"`
+	Network             string `json:"network,omitempty"`
+	Subnetwork          string `json:"subnetwork,omitempty"`
 }
 
 type forwardingRuleResponse struct {
@@ -120,6 +122,10 @@ type forwardingRuleResponse struct {
 	Target              string `json:"target,omitempty"`
 	BackendService      string `json:"backendService,omitempty"`
 	LoadBalancingScheme string `json:"loadBalancingScheme,omitempty"`
+	Network             string `json:"network,omitempty"`
+	Subnetwork          string `json:"subnetwork,omitempty"`
+	PscConnectionStatus string `json:"pscConnectionStatus,omitempty"`
+	PscConnectionID     string `json:"pscConnectionId,omitempty"`
 	CreationTimestamp   string `json:"creationTimestamp,omitempty"`
 	SelfLink            string `json:"selfLink"`
 }

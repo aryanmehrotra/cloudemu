@@ -680,9 +680,13 @@ func (h *Handler) toForwardingRuleResponse(ctx context.Context, lb *lbdriver.LBI
 		Target:              lb.Tags[frTargetTag],
 		Description:         lb.Tags[frDescriptionTag],
 		LoadBalancingScheme: forwardingRuleScheme(lb),
+		Network:             lb.Tags[frNetworkTag],
+		Subnetwork:          lb.Tags[frSubnetworkTag],
 		CreationTimestamp:   lb.Tags[frCreationTag],
 		SelfLink:            gcprest.SelfLink(host, rp.Project, rp.Scope, rp.ScopeName, resourceForwardingRules, name),
 	}
+
+	applyPSCFields(&out, lb)
 
 	// A linked listener (a rule referencing a backend service) supersedes the
 	// round-tripped protocol/portRange and adds the backendService self-link.
@@ -955,6 +959,8 @@ const (
 	frDescriptionTag = "cloudemu:gcpFrDescription"
 	frCreationTag    = "cloudemu:gcpFrCreationTimestamp"
 	frTargetTag      = "cloudemu:gcpFrTarget"
+	frNetworkTag     = "cloudemu:gcpFrNetwork"
+	frSubnetworkTag  = "cloudemu:gcpFrSubnetwork"
 	// frNameTag/frScopeTag carry the client-facing name and scope key so a
 	// scope-prefixed driver record re-emits its real name at its real scope.
 	frNameTag  = "cloudemu:gcpFrName"
@@ -992,6 +998,14 @@ func forwardingRuleTags(req *forwardingRuleRequest) map[string]string {
 		tags[frDescriptionTag] = req.Description
 	}
 
+	if req.Network != "" {
+		tags[frNetworkTag] = req.Network
+	}
+
+	if req.Subnetwork != "" {
+		tags[frSubnetworkTag] = req.Subnetwork
+	}
+
 	return tags
 }
 
@@ -1017,10 +1031,15 @@ func forwardingRuleIP(lb *lbdriver.LBInfo) string {
 
 // forwardingRuleScheme returns the exact GCP loadBalancingScheme, preferring the
 // round-tripped value (EXTERNAL_MANAGED / INTERNAL_MANAGED / …) over the driver
-// scheme's lossy EXTERNAL/INTERNAL collapse.
+// scheme's lossy EXTERNAL/INTERNAL collapse. A Private Service Connect
+// consumer rule sent without a scheme has none, so no default is synthesized.
 func forwardingRuleScheme(lb *lbdriver.LBInfo) string {
 	if s := lb.Tags[frSchemeTag]; s != "" {
 		return s
+	}
+
+	if isPSCTarget(lb.Tags[frTargetTag]) {
+		return ""
 	}
 
 	return schemeToGCP(lb.Scheme)
