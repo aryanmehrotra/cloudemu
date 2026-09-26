@@ -16,6 +16,7 @@ import (
 	"github.com/stackshy/cloudemu/v2/server/azure/acr"
 	azureaiserver "github.com/stackshy/cloudemu/v2/server/azure/ai"
 	aksserver "github.com/stackshy/cloudemu/v2/server/azure/aks"
+	apimanagementsrv "github.com/stackshy/cloudemu/v2/server/azure/apimanagement"
 	appconfigsrv "github.com/stackshy/cloudemu/v2/server/azure/appconfiguration"
 	appinsightssrv "github.com/stackshy/cloudemu/v2/server/azure/appinsights"
 	appgatewaysrv "github.com/stackshy/cloudemu/v2/server/azure/applicationgateway"
@@ -219,6 +220,9 @@ type Drivers struct {
 	// IoTHub serves Microsoft.Devices/IotHubs plus its listkeys /
 	// getKeysForKeyName actions and the nested event-hub consumer groups.
 	IoTHub iothubsrv.Store
+	// APIManagement serves Microsoft.ApiManagement/service (the API Management
+	// service control plane).
+	APIManagement apimanagementsrv.Store
 	// SQLVirtualMachine serves Microsoft.SqlVirtualMachine/sqlVirtualMachines:
 	// the SQL-management overlay on a compute VM.
 	SQLVirtualMachine sqlvirtualmachinesrv.Store
@@ -638,6 +642,15 @@ func New(d Drivers) http.Handler {
 	if d.IoTHub != nil {
 		iotHubHandler = iothubsrv.New(d.IoTHub)
 		rgPurgers = append(rgPurgers, iotHubHandler)
+	}
+
+	// API Management: a resource-group-scoped resource, so its handler joins the
+	// purge cascade. Deleting the group tears down every API Management service.
+	// Registered further below.
+	var apiManagementHandler *apimanagementsrv.Handler
+	if d.APIManagement != nil {
+		apiManagementHandler = apimanagementsrv.New(d.APIManagement)
+		rgPurgers = append(rgPurgers, apiManagementHandler)
 	}
 
 	// SQL virtual machines: a resource-group-scoped resource, so its handler
@@ -1112,6 +1125,13 @@ func New(d Drivers) http.Handler {
 	// every other Azure handler, so registration order is unconstrained.
 	if iotHubHandler != nil {
 		srv.Register(iotHubHandler)
+	}
+
+	// API Management claims Microsoft.ApiManagement/service: a distinct ARM
+	// provider name from every other Azure handler, so registration order is
+	// unconstrained.
+	if apiManagementHandler != nil {
+		srv.Register(apiManagementHandler)
 	}
 
 	// SQL virtual machines claim Microsoft.SqlVirtualMachine/sqlVirtualMachines:

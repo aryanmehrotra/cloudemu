@@ -111,6 +111,9 @@ const (
 	// ServiceIoTHub buckets Azure IoT Hub resources
 	// (Microsoft.Devices/IotHubs).
 	ServiceIoTHub = "iothub"
+	// ServiceAPIManagement buckets Azure API Management resources
+	// (Microsoft.ApiManagement/service).
+	ServiceAPIManagement = "apimanagement"
 )
 
 // Resource type constants emitted by the walkers.
@@ -265,6 +268,11 @@ const TypeRecoveryVault = "Vault"
 // TypeIoTHub is the portable type for an Azure IoT Hub
 // (Microsoft.Devices/IotHubs). Azure-only, so it lives in its own line.
 const TypeIoTHub = "IotHub"
+
+// TypeAPIManagementService is the portable type for an Azure API Management
+// service (Microsoft.ApiManagement/service). Azure-only, so it lives in its own
+// line.
+const TypeAPIManagementService = "Service"
 
 // sqlVMOptInTagKey and sqlVMOptInTagValue mark a compute VM as opting in to a
 // paired Microsoft.SqlVirtualMachine overlay row in discovery. Only Azure VMs
