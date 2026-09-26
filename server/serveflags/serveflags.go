@@ -33,6 +33,10 @@ const defaultShutdownTimeout = 10 * time.Second
 // --k8s-progression is on and no interval is given.
 const defaultK8sProgressionInterval = time.Second
 
+// defaultTickInterval is how often serve calls the services' Tick when no
+// interval is given.
+const defaultTickInterval = time.Second
+
 var (
 	// ErrTLSPairRequired is returned when only one of --tls-cert/--tls-key is set.
 	ErrTLSPairRequired = errors.New("--tls-cert and --tls-key must be given together")
@@ -44,6 +48,8 @@ var (
 	ErrUnknownProvider = errors.New("unknown provider (want aws, azure, gcp, or oci)")
 	// ErrVCRCassetteRequired is returned when --vcr is set without --vcr-cassette.
 	ErrVCRCassetteRequired = errors.New("--vcr requires --vcr-cassette")
+	// ErrNegativeTickInterval is returned for a --tick-interval below zero.
+	ErrNegativeTickInterval = errors.New("--tick-interval must be 0 or more")
 )
 
 // StringList is a repeatable string flag (e.g. --tls-host a --tls-host b).
@@ -102,6 +108,8 @@ type CommonConfig struct {
 	K8sProgressionInterval time.Duration
 	K8sNodes               int
 
+	TickInterval time.Duration
+
 	VCRMode     string
 	VCRCassette string
 	VCRStrict   bool
@@ -146,6 +154,7 @@ func RegisterCommon(fs *flag.FlagSet, c *CommonConfig, getenv func(string) strin
 
 	registerPersistFlags(fs, c, getenv)
 	registerK8sProgressionFlags(fs, c, getenv)
+	registerTickFlag(fs, c, getenv)
 	registerEnforceAuthFlag(fs, c)
 	registerVCRFlags(fs, c)
 }
@@ -170,6 +179,13 @@ func registerPersistFlags(fs *flag.FlagSet, c *CommonConfig, getenv func(string)
 	fs.DurationVar(&c.PersistInterval, "persist-interval",
 		envDurationOr(getenv, "CLOUDEMU_PERSIST_INTERVAL", serverkit.DefaultPersistInterval),
 		"save cadence for --persist-strategy=scheduled (env CLOUDEMU_PERSIST_INTERVAL)")
+}
+
+// registerTickFlag registers the cadence of the services' background tick.
+func registerTickFlag(fs *flag.FlagSet, c *CommonConfig, getenv func(string) string) {
+	fs.DurationVar(&c.TickInterval, "tick-interval",
+		envDurationOr(getenv, "CLOUDEMU_TICK_INTERVAL", defaultTickInterval),
+		"how often time-driven work runs, such as CloudWatch alarm evaluation; 0 turns it off (env CLOUDEMU_TICK_INTERVAL)")
 }
 
 // registerK8sProgressionFlags registers the KWOK-style staged Pod lifecycle knobs.
@@ -210,6 +226,10 @@ func (c *CommonConfig) Validate() error {
 		return ErrStateFileRequired
 	}
 
+	if c.TickInterval < 0 {
+		return ErrNegativeTickInterval
+	}
+
 	if c.VCRMode != "" {
 		if _, err := vcr.ParseMode(c.VCRMode); err != nil {
 			return err
@@ -243,6 +263,7 @@ func (c *CommonConfig) ToServerkitConfig(providers []string) serverkit.Config {
 		K8sProgression:         c.K8sProgression,
 		K8sProgressionInterval: c.K8sProgressionInterval,
 		K8sNodes:               c.K8sNodes,
+		TickInterval:           c.TickInterval,
 		AzureSubscription:      c.AzureSubscription,
 		Admin:                  c.Admin,
 		Persist:                c.Persist,
