@@ -18,12 +18,23 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resourcegraph/armresourcegraph"
 
 	"github.com/stackshy/cloudemu/v2"
+	"github.com/stackshy/cloudemu/v2/providers/azure/virtualmachines"
 	azureserver "github.com/stackshy/cloudemu/v2/server/azure"
 )
 
 var fastPoll = &runtime.PollUntilDoneOptions{Frequency: time.Millisecond}
 
 func newUpdateTestServer(t *testing.T) (*httptest.Server, *armcompute.DisksClient) {
+	t.Helper()
+
+	ts, client, _ := newUpdateTestEnv(t)
+
+	return ts, client
+}
+
+// newUpdateTestEnv is newUpdateTestServer plus the Azure VM mock behind it, so
+// a test can attach disks to VMs and change power state directly.
+func newUpdateTestEnv(t *testing.T) (*httptest.Server, *armcompute.DisksClient, *virtualmachines.Mock) {
 	t.Helper()
 
 	cloudP := cloudemu.NewAzure()
@@ -37,7 +48,7 @@ func newUpdateTestServer(t *testing.T) (*httptest.Server, *armcompute.DisksClien
 	t.Cleanup(ts.Close)
 	ensureRG(t, ts, "sub-1", "rg-1")
 
-	return ts, newDisksClient(t, ts)
+	return ts, newDisksClient(t, ts), cloudP.VirtualMachines
 }
 
 func createDiskForUpdate(t *testing.T, client *armcompute.DisksClient, name string, sku armcompute.DiskStorageAccountTypes) {
@@ -210,7 +221,7 @@ func TestSDKDiskUpdateRejections(t *testing.T) {
 	}{
 		{"shrink", "rej-disk", armcompute.DiskUpdate{
 			Properties: &armcompute.DiskUpdateProperties{DiskSizeGB: to.Ptr[int32](32)},
-		}, http.StatusBadRequest, "BadRequest"},
+		}, http.StatusBadRequest, "InvalidParameter"},
 		{"iops on Standard_LRS", "rej-disk", armcompute.DiskUpdate{
 			Properties: &armcompute.DiskUpdateProperties{DiskIOPSReadWrite: to.Ptr[int64](3000)},
 		}, http.StatusBadRequest, "InvalidParameter"},
@@ -248,9 +259,11 @@ func TestSDKDiskUpdateRejections(t *testing.T) {
 	}
 }
 
-// TestSDKDiskUpdateSKUDowngradeDropsPerf checks that moving a PremiumV2_LRS
-// disk to a SKU without settable performance drops the provisioned IOPS/MBps.
-func TestSDKDiskUpdateSKUDowngradeDropsPerf(t *testing.T) {
+// TestSDKDiskUpdatePremiumV2CannotConvertBack checks that a PremiumV2_LRS disk
+// keeps its provisioned performance and refuses a conversion to another type:
+// Microsoft Learn (disks-convert-types) says a Premium SSD v2 cannot be
+// switched directly to another disk type, only migrated via a snapshot.
+func TestSDKDiskUpdatePremiumV2CannotConvertBack(t *testing.T) {
 	_, client := newUpdateTestServer(t)
 
 	createDiskForUpdate(t, client, "perf-disk", armcompute.DiskStorageAccountTypesPremiumV2LRS)
@@ -261,15 +274,32 @@ func TestSDKDiskUpdateSKUDowngradeDropsPerf(t *testing.T) {
 		t.Fatalf("set iops: %v", err)
 	}
 
-	got, err := beginUpdate(t, client, "perf-disk", armcompute.DiskUpdate{
+	_, err := beginUpdate(t, client, "perf-disk", armcompute.DiskUpdate{
 		SKU: &armcompute.DiskSKU{Name: to.Ptr(armcompute.DiskStorageAccountTypesPremiumLRS)},
 	})
+	wantDiskErr(t, err, http.StatusBadRequest, "InvalidParameter")
+
+	got, err := client.Get(context.Background(), "rg-1", "perf-disk", nil)
 	if err != nil {
-		t.Fatalf("downgrade: %v", err)
+		t.Fatalf("Get: %v", err)
 	}
 
-	if got.Properties.DiskIOPSReadWrite != nil {
-		t.Errorf("diskIOPSReadWrite=%d after moving to Premium_LRS, want omitted", *got.Properties.DiskIOPSReadWrite)
+	if *got.SKU.Name != armcompute.DiskStorageAccountTypesPremiumV2LRS || *got.Properties.DiskIOPSReadWrite != 5000 {
+		t.Errorf("rejected conversion changed the disk: sku=%s iops=%d", *got.SKU.Name, *got.Properties.DiskIOPSReadWrite)
+	}
+}
+
+// wantDiskErr asserts err is an ARM error with the given status and code.
+func wantDiskErr(t *testing.T, err error, status int, code string) {
+	t.Helper()
+
+	var respErr *azcore.ResponseError
+	if !errors.As(err, &respErr) {
+		t.Fatalf("err=%v, want *azcore.ResponseError %d %s", err, status, code)
+	}
+
+	if respErr.StatusCode != status || respErr.ErrorCode != code {
+		t.Errorf("got %d %q, want %d %q", respErr.StatusCode, respErr.ErrorCode, status, code)
 	}
 }
 

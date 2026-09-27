@@ -272,10 +272,14 @@ func (h *Handler) createOrUpdate(w http.ResponseWriter, r *http.Request, rp azur
 	// attachment, rather than delete+recreate, which would leave a duplicate
 	// phantom volume when the disk is attached (DeleteVolume rejects an attached
 	// disk) and churn the uniqueId/timeCreated on every re-PUT.
+	// sku.tier is read-only in the ARM contract, so an update takes the
+	// performance tier from properties.tier alone.
 	if existing, err := findDiskByName(r.Context(), h.compute, rp.ResourceGroup, rp.ResourceName); err == nil {
+		cfg.Tier = req.Properties.Tier
+
 		vol, err := h.updateExistingDisk(r.Context(), existing, cfg)
 		if err != nil {
-			azurearm.WriteCErr(w, err)
+			writeDiskErr(w, err)
 			return
 		}
 
