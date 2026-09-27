@@ -3,7 +3,7 @@
 
 Azure's `frontdoor` service · portable interface `driver.AzureFrontDoorProfiles` · [Azure index](./README.md)
 
-## Operations (20)
+## Operations (22)
 
 | Operation | Description |
 | --- | --- |
@@ -27,6 +27,8 @@ Azure's `frontdoor` service · portable interface `driver.AzureFrontDoorProfiles
 | `ListOrigins` | ListOrigins returns the origins under (rg, profile, originGroup), ordered by |
 | `ListProfiles` | ListProfiles returns the profiles in rg, or all when rg is empty |
 | `ListRoutes` | ListRoutes returns the routes under (rg, profile, endpoint), ordered by key. |
+| `UpdateOrigin` | UpdateOrigin overlays patch on the stored origin's properties (ARM PATCH), |
+| `UpdateRoute` | UpdateRoute overlays patch.Properties on the stored route (ARM PATCH); a |
 
 ## Optional capabilities
 
@@ -46,6 +48,8 @@ AzureFrontDoorOriginsRoutes is the Azure-only store for the two grandchild
 | `GetRoute` | GetRoute returns the route identified by (rg, profile, endpoint, name), or |
 | `ListOrigins` | ListOrigins returns the origins under (rg, profile, originGroup), ordered by |
 | `ListRoutes` | ListRoutes returns the routes under (rg, profile, endpoint), ordered by key. |
+| `UpdateOrigin` | UpdateOrigin overlays patch on the stored origin's properties (ARM PATCH), |
+| `UpdateRoute` | UpdateRoute overlays patch.Properties on the stored route (ARM PATCH); a |
 
 ## Not in scope
 

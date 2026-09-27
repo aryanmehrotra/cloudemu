@@ -1,9 +1,11 @@
 package frontdoor
 
 import (
+	"maps"
 	"net/http"
 	"strings"
 
+	cerrors "github.com/stackshy/cloudemu/v2/errors"
 	"github.com/stackshy/cloudemu/v2/server/wire/azurearm"
 )
 
@@ -71,24 +73,6 @@ func segmentsAfterProfiles(urlPath string) ([]string, bool) {
 	return nil, false
 }
 
-// profileID is the ARM id of the profile a grandchild lives in.
-func (np *nestedPath) profileID() string {
-	return azurearm.BuildResourceID(np.sub, np.rg, providerName, typeProfiles, np.profile)
-}
-
-// id is the ARM id of the grandchild named name under childType/parent.
-func (np *nestedPath) id(childType, kind, name string) string {
-	return np.profileID() + "/" + childType + "/" + np.parent + "/" + kind + "/" + name
-}
-
-// withName returns a copy of np addressing the grandchild named name.
-func (np *nestedPath) withName(name string) *nestedPath {
-	out := *np
-	out.name = name
-
-	return &out
-}
-
 // nestedJSON is the ARM wire body shared by origins and routes: neither has a
 // location or tags, and every property lives under "properties".
 type nestedJSON struct {
@@ -147,19 +131,69 @@ func writeCreated(w http.ResponseWriter, created bool, body nestedJSON) {
 	azurearm.WriteJSON(w, status, body)
 }
 
-// copyProps returns a copy of props with room for extra computed keys.
-func copyProps(props map[string]any, extra int) map[string]any {
-	out := make(map[string]any, len(props)+extra)
-	for k, v := range props {
-		out[k] = v
-	}
+// withComputed returns a copy of props with the computed read-only stamps set.
+func withComputed(props, computed map[string]any) map[string]any {
+	out := make(map[string]any, len(props)+len(computed))
+	maps.Copy(out, props)
+	maps.Copy(out, computed)
 
 	return out
 }
 
-// setDefault stores v under key when the key is absent.
-func setDefault(props map[string]any, key string, v any) {
-	if _, ok := props[key]; !ok {
-		props[key] = v
+// grandchildID is the ARM id of a grandchild: the profile id, then
+// childType/parent/kind/name.
+func grandchildID(sub, rg, profile, childType, parent, kind, name string) string {
+	return azurearm.BuildResourceID(sub, rg, providerName, typeProfiles, profile) +
+		"/" + childType + "/" + parent + "/" + kind + "/" + name
+}
+
+// storedETag renders the ETag the store rotates on every write in ARM's weak
+// form, falling back to one derived from id for a value restored from a snapshot
+// taken before ETags were stored.
+func storedETag(etag, id string) string {
+	if etag == "" {
+		return azurearm.WeakETag(id)
+	}
+
+	return `W/"` + etag + `"`
+}
+
+// writeErr is the one place Front Door maps provider errors onto ARM responses.
+// FailedPrecondition carries Azure's dependency refusals (an origin group still
+// used by a route, the last enabled origin of a routed group, a route
+// domain/protocol/path conflict), which Azure answers 400 BadRequest rather than
+// the 409 azurearm.WriteCErr uses; everything else maps as usual.
+func writeErr(w http.ResponseWriter, err error) {
+	if cerrors.IsFailedPrecondition(err) {
+		azurearm.WriteError(w, http.StatusBadRequest, "BadRequest", cerrors.Message(err))
+		return
+	}
+
+	azurearm.WriteCErr(w, err)
+}
+
+// writePutErr maps a grandchild PUT error. The only NotFound a create raises is
+// a missing parent (origin group or endpoint), which ARM reports as 404
+// ParentResourceNotFound.
+func writePutErr(w http.ResponseWriter, err error) {
+	if cerrors.IsNotFound(err) {
+		azurearm.WriteParentNotFound(w, err)
+		return
+	}
+
+	writeErr(w, err)
+}
+
+// writeDeleteResult answers a grandchild DELETE: 200 when it was removed, 204
+// when there was nothing to remove (AFDOrigins_Delete and Routes_Delete list
+// 204), and the mapped error otherwise.
+func writeDeleteResult(w http.ResponseWriter, err error) {
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusOK)
+	case cerrors.IsNotFound(err):
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		writeErr(w, err)
 	}
 }

@@ -64,7 +64,13 @@ func TestOriginAndRouteCRUD(t *testing.T) {
 		t.Errorf("origin = %+v", o)
 	}
 
-	// A re-put is a replace, not a create.
+	// A re-put is a replace, not a create: the new hostName is stored, and a
+	// property the first put carried but the second omits is dropped.
+	_, _, err = m.CreateOrUpdateOrigin(ctx, rg, profile, originGroup, origin, driver.AzureFrontDoorOrigin{
+		Properties: map[string]any{"hostName": "app.example.net", "originHostHeader": "hdr.example.net"},
+	})
+	requireNoError(t, err, "put origin with host header")
+
 	_, created, err := m.CreateOrUpdateOrigin(ctx, rg, profile, originGroup, origin, driver.AzureFrontDoorOrigin{
 		Properties: map[string]any{"hostName": "other.example.net"},
 	})
@@ -72,6 +78,17 @@ func TestOriginAndRouteCRUD(t *testing.T) {
 
 	if created {
 		t.Error("second origin put should report created=false")
+	}
+
+	replaced, err := m.GetOrigin(ctx, rg, profile, originGroup, origin)
+	requireNoError(t, err, "get replaced origin")
+
+	if replaced.Properties["hostName"] != "other.example.net" {
+		t.Errorf("replaced hostName = %v, want other.example.net", replaced.Properties["hostName"])
+	}
+
+	if _, kept := replaced.Properties["originHostHeader"]; kept {
+		t.Errorf("replace kept originHostHeader: %v", replaced.Properties)
 	}
 
 	origins, err := m.ListOrigins(ctx, rg, profile, originGroup)
@@ -85,6 +102,7 @@ func TestOriginAndRouteCRUD(t *testing.T) {
 	}
 
 	requireNoError(t, m.DeleteRoute(ctx, rg, profile, endpoint, route), "delete route")
+	// With the route gone the group is no longer routed, so its last origin can go.
 	requireNoError(t, m.DeleteOrigin(ctx, rg, profile, originGroup, origin), "delete origin")
 
 	if err := m.DeleteOrigin(ctx, rg, profile, originGroup, origin); !cerrors.IsNotFound(err) {

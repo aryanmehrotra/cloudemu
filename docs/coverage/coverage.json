@@ -6807,6 +6807,14 @@
       {
         "name": "ListRoutes",
         "doc": "ListRoutes returns the routes under (rg, profile, endpoint), ordered by key."
+      },
+      {
+        "name": "UpdateOrigin",
+        "doc": "UpdateOrigin overlays patch on the stored origin's properties (ARM PATCH),"
+      },
+      {
+        "name": "UpdateRoute",
+        "doc": "UpdateRoute overlays patch.Properties on the stored route (ARM PATCH); a"
       }
     ],
     "optionalCapabilities": [
@@ -6845,6 +6853,14 @@
           {
             "name": "ListRoutes",
             "doc": "ListRoutes returns the routes under (rg, profile, endpoint), ordered by key."
+          },
+          {
+            "name": "UpdateOrigin",
+            "doc": "UpdateOrigin overlays patch on the stored origin's properties (ARM PATCH),"
+          },
+          {
+            "name": "UpdateRoute",
+            "doc": "UpdateRoute overlays patch.Properties on the stored route (ARM PATCH); a"
           }
         ]
       }

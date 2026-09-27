@@ -9,7 +9,10 @@ import (
 	fddriver "github.com/stackshy/cloudemu/v2/services/frontdoor/driver"
 )
 
-// serveRoute routes .../afdEndpoints/{ep}/routes[/{r}] (Routes.*).
+// serveRoute routes .../afdEndpoints/{ep}/routes[/{r}] (Routes.*). The handlers
+// decode the body, translate the originGroup ARM id into a name in this profile,
+// and map errors; validation, defaults and the conflict rule live in the
+// provider.
 func (h *Handler) serveRoute(w http.ResponseWriter, r *http.Request, np *nestedPath) {
 	dispatchNested(w, r, np, &nestedOps{
 		put: h.createOrUpdateRoute, get: h.getRoute, patch: h.updateRoute,
@@ -19,88 +22,83 @@ func (h *Handler) serveRoute(w http.ResponseWriter, r *http.Request, np *nestedP
 
 // createOrUpdateRoute handles PUT (Routes.BeginCreate): a full replace.
 func (h *Handler) createOrUpdateRoute(w http.ResponseWriter, r *http.Request, np *nestedPath) {
-	var body nestedJSON
-	if !azurearm.DecodeJSON(w, r, &body) {
+	route, ok := decodeRoute(w, r, np)
+	if !ok {
 		return
 	}
 
-	h.storeRoute(w, r, np, stripKeys(body.Properties, routeComputedKeys()...))
+	stored, created, err := h.fd.CreateOrUpdateRoute(r.Context(), np.rg, np.profile, np.parent, np.name, route)
+	if err != nil {
+		writePutErr(w, err)
+		return
+	}
+
+	writeCreated(w, created, toRouteJSON(np.sub, stored))
 }
 
-// updateRoute handles PATCH (Routes.BeginUpdate): supplied property keys overlay
-// the stored ones, and the merged route is re-validated (so repointing
-// originGroup at a missing group is refused).
-//
-//nolint:dupl // parallel to updateOrigin over distinct grandchild types and driver methods.
+// updateRoute handles PATCH (Routes.BeginUpdate): the provider overlays the
+// supplied property keys on the stored ones and re-validates the merge (so
+// repointing originGroup at a missing group, or into a conflict, is refused).
 func (h *Handler) updateRoute(w http.ResponseWriter, r *http.Request, np *nestedPath) {
-	var body nestedJSON
-	if !azurearm.DecodeJSON(w, r, &body) {
+	patch, ok := decodeRoute(w, r, np)
+	if !ok {
 		return
 	}
 
-	stored, err := h.fd.GetRoute(r.Context(), np.rg, np.profile, np.parent, np.name)
+	stored, err := h.fd.UpdateRoute(r.Context(), np.rg, np.profile, np.parent, np.name, patch)
 	if err != nil {
-		azurearm.WriteCErr(w, err)
+		writeErr(w, err)
 		return
 	}
 
-	patch := stripKeys(body.Properties, routeComputedKeys()...)
-	h.storeRoute(w, r, np, overlayProps(stored.Properties, patch))
+	azurearm.WriteJSON(w, http.StatusOK, toRouteJSON(np.sub, stored))
 }
 
-// storeRoute validates props, resolves the origin-group reference and writes the
-// route, answering 201 on create and 200 on replace.
-func (h *Handler) storeRoute(w http.ResponseWriter, r *http.Request, np *nestedPath, props map[string]any) {
+// decodeRoute reads a route body into the driver shape, resolving
+// properties.originGroup.id (when supplied) to an origin-group name. It writes the
+// error response and returns false on failure.
+func decodeRoute(w http.ResponseWriter, r *http.Request, np *nestedPath) (fddriver.AzureFrontDoorRoute, bool) {
+	var body nestedJSON
+	if !azurearm.DecodeJSON(w, r, &body) {
+		return fddriver.AzureFrontDoorRoute{}, false
+	}
+
+	props := stripKeys(body.Properties, routeComputedKeys()...)
+
 	originGroup, err := resolveRouteOriginGroup(np, props)
-	if err == nil {
-		err = validateRoute(props)
-	}
-
 	if err != nil {
-		azurearm.WriteCErr(w, err)
-		return
+		writeErr(w, err)
+		return fddriver.AzureFrontDoorRoute{}, false
 	}
 
-	stored, created, err := h.fd.CreateOrUpdateRoute(r.Context(), np.rg, np.profile, np.parent, np.name,
-		fddriver.AzureFrontDoorRoute{OriginGroup: originGroup, Properties: props})
-	if err != nil {
-		azurearm.WriteCErr(w, err)
-		return
-	}
-
-	writeCreated(w, created, toRouteJSON(np, stored))
+	return fddriver.AzureFrontDoorRoute{OriginGroup: originGroup, Properties: props}, true
 }
 
 func (h *Handler) getRoute(w http.ResponseWriter, r *http.Request, np *nestedPath) {
 	stored, err := h.fd.GetRoute(r.Context(), np.rg, np.profile, np.parent, np.name)
 	if err != nil {
-		azurearm.WriteCErr(w, err)
+		writeErr(w, err)
 		return
 	}
 
-	azurearm.WriteJSON(w, http.StatusOK, toRouteJSON(np, stored))
+	azurearm.WriteJSON(w, http.StatusOK, toRouteJSON(np.sub, stored))
 }
 
 func (h *Handler) deleteRoute(w http.ResponseWriter, r *http.Request, np *nestedPath) {
-	if err := h.fd.DeleteRoute(r.Context(), np.rg, np.profile, np.parent, np.name); err != nil {
-		azurearm.WriteCErr(w, err)
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
+	writeDeleteResult(w, h.fd.DeleteRoute(r.Context(), np.rg, np.profile, np.parent, np.name))
 }
 
 //nolint:dupl // parallel to listOrigins over distinct grandchild types and driver methods.
 func (h *Handler) listRoutes(w http.ResponseWriter, r *http.Request, np *nestedPath) {
 	stored, err := h.fd.ListRoutes(r.Context(), np.rg, np.profile, np.parent)
 	if err != nil {
-		azurearm.WriteCErr(w, err)
+		writeErr(w, err)
 		return
 	}
 
 	out := nestedListResult{Value: make([]nestedJSON, 0, len(stored))}
 	for i := range stored {
-		out.Value = append(out.Value, toRouteJSON(np.withName(stored[i].Name), &stored[i]))
+		out.Value = append(out.Value, toRouteJSON(np.sub, &stored[i]))
 	}
 
 	azurearm.WriteJSON(w, http.StatusOK, out)
@@ -111,11 +109,18 @@ func routeComputedKeys() []string {
 	return []string{provisioningStateKey, deploymentStatusKey, endpointNameKey}
 }
 
-// resolveRouteOriginGroup reads properties.originGroup.id and returns the origin
-// group name. Azure requires the reference, and it must address an origin group
-// in the route's own profile.
+// resolveRouteOriginGroup translates properties.originGroup.id into the name of
+// an origin group in the route's own profile. An absent originGroup yields ""
+// (the provider requires it on create; a PATCH keeps the stored one). A
+// malformed id, or one addressing another subscription, resource group or
+// profile, is refused.
 func resolveRouteOriginGroup(np *nestedPath, props map[string]any) (string, error) {
-	ref, _ := props[originGroupKey].(map[string]any)
+	raw, present := props[originGroupKey]
+	if !present || raw == nil {
+		return "", nil
+	}
+
+	ref, _ := raw.(map[string]any)
 	id, _ := ref["id"].(string)
 
 	if id == "" {
@@ -143,117 +148,21 @@ func isOriginGroupRef(rp *azurearm.ResourcePath) bool {
 		rp.SubResourceAction == ""
 }
 
-// validateRoute checks the route enums and patterns Azure validates, each only
-// when supplied.
-func validateRoute(props map[string]any) error {
-	enums := []struct {
-		key     string
-		allowed []string
-	}{
-		{forwardingProtocolKey, []string{"HttpOnly", "HttpsOnly", "MatchRequest"}},
-		{httpsRedirectKey, []string{stateEnabled, stateDisabled}},
-		{linkToDefaultDomainKey, []string{stateEnabled, stateDisabled}},
-		{enabledStateKey, []string{stateEnabled, stateDisabled}},
-	}
-
-	for _, e := range enums {
-		if err := checkEnum(props, e.key, e.allowed); err != nil {
-			return err
-		}
-	}
-
-	if err := checkProtocols(props); err != nil {
-		return err
-	}
-
-	return checkPatterns(props)
-}
-
-// checkEnum rejects a string property that is not one of allowed. An absent key
-// passes.
-func checkEnum(props map[string]any, key string, allowed []string) error {
-	v, ok := props[key]
-	if !ok || v == nil {
-		return nil
-	}
-
-	if s, isStr := v.(string); isStr && containsFold(allowed, s) {
-		return nil
-	}
-
-	return cerrors.Newf(cerrors.InvalidArgument,
-		"front door route properties.%s must be one of %s", key, strings.Join(allowed, ", "))
-}
-
-// checkProtocols validates supportedProtocols: a list of Http / Https.
-func checkProtocols(props map[string]any) error {
-	allowed := []string{protocolHTTP, protocolHTTPS}
-
-	return eachString(props, supportedProtocolsKey, func(s string) bool { return containsFold(allowed, s) },
-		"front door route properties.supportedProtocols entries must be Http or Https")
-}
-
-// checkPatterns validates patternsToMatch: every pattern must start with "/".
-func checkPatterns(props map[string]any) error {
-	return eachString(props, patternsToMatchKey, func(s string) bool { return strings.HasPrefix(s, "/") },
-		"front door route properties.patternsToMatch entries must start with /")
-}
-
-// eachString requires props[key], when present, to be a list of strings that
-// all satisfy ok.
-func eachString(props map[string]any, key string, ok func(string) bool, msg string) error {
-	v, present := props[key]
-	if !present || v == nil {
-		return nil
-	}
-
-	list, isList := v.([]any)
-	if !isList {
-		return cerrors.New(cerrors.InvalidArgument, msg)
-	}
-
-	for _, item := range list {
-		if s, isStr := item.(string); !isStr || !ok(s) {
-			return cerrors.New(cerrors.InvalidArgument, msg)
-		}
-	}
-
-	return nil
-}
-
-func containsFold(list []string, s string) bool {
-	for _, v := range list {
-		if strings.EqualFold(v, s) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// toRouteJSON reconstructs the ARM route body, stamping the id/etag, the
-// defaults Azure reports for omitted fields, and the computed stamps.
-func toRouteJSON(np *nestedPath, rt *fddriver.AzureFrontDoorRoute) nestedJSON {
-	id := np.id(subTypeEndpoints, subTypeRoutes, np.name)
-
-	const injected = 8
-
-	props := copyProps(rt.Properties, injected)
-	setDefault(props, enabledStateKey, enabledStateDefault)
-	setDefault(props, forwardingProtocolKey, "MatchRequest")
-	setDefault(props, httpsRedirectKey, stateDisabled)
-	setDefault(props, linkToDefaultDomainKey, stateDisabled)
-	setDefault(props, supportedProtocolsKey, []any{protocolHTTP, protocolHTTPS})
-
-	props[endpointNameKey] = np.parent
-	props[provisioningStateKey] = provisioningStateSucceeded
-	props[deploymentStatusKey] = deploymentStatusNotStarted
+// toRouteJSON reconstructs the ARM route body from the stored route (so the id,
+// name and endpointName carry the stored casing), stamping the computed
+// read-only properties.
+func toRouteJSON(sub string, rt *fddriver.AzureFrontDoorRoute) nestedJSON {
+	id := grandchildID(sub, rt.ResourceGroup, rt.Profile, subTypeEndpoints, rt.Endpoint, subTypeRoutes, rt.Name)
 
 	return nestedJSON{
-		ID:         id,
-		Name:       np.name,
-		Type:       routeResourceType,
-		Etag:       azurearm.WeakETag(id),
-		Properties: props,
+		ID:   id,
+		Name: rt.Name,
+		Type: routeResourceType,
+		Etag: storedETag(rt.ETag, id),
+		Properties: withComputed(rt.Properties, map[string]any{
+			endpointNameKey:      rt.Endpoint,
+			provisioningStateKey: provisioningStateSucceeded,
+			deploymentStatusKey:  deploymentStatusNotStarted,
+		}),
 	}
 }

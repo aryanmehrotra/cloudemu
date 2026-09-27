@@ -263,8 +263,8 @@ func (m *Mock) GetOriginGroup(_ context.Context, rg, profile, name string) (*dri
 }
 
 // DeleteOriginGroup removes the stored origin group and cascades to its origins.
-// Like Azure, it refuses (FailedPrecondition, ARM 409) while a route in the
-// profile still forwards to the group.
+// Like Azure, it refuses (FailedPrecondition, ARM 400 BadRequest) while a route
+// in the profile still forwards to the group.
 func (m *Mock) DeleteOriginGroup(_ context.Context, rg, profile, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

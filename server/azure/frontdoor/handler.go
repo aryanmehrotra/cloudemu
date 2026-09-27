@@ -28,7 +28,12 @@
 //	PUT/GET/PATCH/DELETE .../afdEndpoints/{ep}/routes/{r}      : Routes.* (originGroup must exist in the profile)
 //	GET    .../afdEndpoints/{ep}/routes                       : Routes.ListByEndpoint
 //
-// An origin group still referenced by a route cannot be deleted (409 Conflict).
+// Validation, defaults and referential rules live in the provider; these
+// handlers decode bodies and map errors (writeErr). Azure answers its Front Door
+// dependency refusals with 400 BadRequest: deleting an origin group a route still
+// uses, deleting or disabling the last enabled origin of such a group, and two
+// routes claiming the same domain+protocol+path. A PUT under a missing parent is
+// 404 ParentResourceNotFound; a DELETE of a missing origin or route is 204.
 // Deleting an origin group removes its origins; deleting an endpoint removes its
 // routes; deleting a profile removes everything under it.
 //

@@ -112,7 +112,9 @@ type origGroupListResult struct {
 }
 
 // Grandchild types: origins (under an origin group) and routes (under an
-// endpoint), plus the property keys, defaults and ranges they use.
+// endpoint). Their property validation and defaults live in the provider; the
+// wire layer only needs the computed keys it stamps and the reference it
+// resolves.
 const (
 	subTypeOrigins = "origins"
 	subTypeRoutes  = "routes"
@@ -120,39 +122,7 @@ const (
 	originResourceType = "Microsoft.Cdn/profiles/originGroups/origins"
 	routeResourceType  = "Microsoft.Cdn/profiles/afdEndpoints/routes"
 
-	// Origin property keys.
-	httpPortKey             = "httpPort"
-	httpsPortKey            = "httpsPort"
-	priorityKey             = "priority"
-	weightKey               = "weight"
-	enforceCertNameCheckKey = "enforceCertificateNameCheck"
-	originGroupNameKey      = "originGroupName"
-
-	// Route property keys.
-	originGroupKey         = "originGroup"
-	endpointNameKey        = "endpointName"
-	forwardingProtocolKey  = "forwardingProtocol"
-	httpsRedirectKey       = "httpsRedirect"
-	linkToDefaultDomainKey = "linkToDefaultDomain"
-	supportedProtocolsKey  = "supportedProtocols"
-	patternsToMatchKey     = "patternsToMatch"
-
-	protocolHTTP  = "Http"
-	protocolHTTPS = "Https"
-
-	stateEnabled  = "Enabled"
-	stateDisabled = "Disabled"
-
-	// Origin defaults Azure reports when the request omits them.
-	defaultHTTPPort  = 80
-	defaultHTTPSPort = 443
-
-	// Origin ranges from the Microsoft.Cdn API: ports 1-65535, priority 1-5,
-	// weight 1-1000.
-	minPort     = 1
-	maxPort     = 65535
-	minPriority = 1
-	maxPriority = 5
-	minWeight   = 1
-	maxWeight   = 1000
+	originGroupNameKey = "originGroupName"
+	originGroupKey     = "originGroup"
+	endpointNameKey    = "endpointName"
 )

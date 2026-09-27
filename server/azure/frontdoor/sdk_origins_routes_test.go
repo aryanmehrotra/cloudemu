@@ -111,9 +111,10 @@ func TestSDKFrontDoorOriginsRoutesChain(t *testing.T) {
 	listChildren(ctx, t, c)
 	updateOriginAndRoute(ctx, t, c)
 
-	// The origin group is still referenced by the route: Azure refuses with 409.
+	// The origin group is still referenced by the route: Azure refuses with 400
+	// BadRequest (the same code as its other Front Door dependency refusals).
 	_, err := c.groups.BeginDelete(ctx, sdkRG, sdkProfile, sdkOG, nil)
-	wantStatus(t, "delete in-use origin group", err, http.StatusConflict)
+	wantStatus(t, "delete in-use origin group", err, http.StatusBadRequest)
 
 	teardownInReverse(ctx, t, c)
 }
