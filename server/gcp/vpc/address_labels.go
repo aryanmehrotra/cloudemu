@@ -3,9 +3,9 @@ package vpc
 import (
 	"encoding/json"
 	"net/http"
-	"sort"
 	"strings"
 
+	cerrors "github.com/stackshy/cloudemu/v2/errors"
 	"github.com/stackshy/cloudemu/v2/server/wire/gcprest"
 )
 
@@ -27,26 +27,6 @@ type addressSetLabelsRequest struct {
 	LabelFingerprint string            `json:"labelFingerprint"`
 }
 
-// addressLabelFingerprint returns the fingerprint of an address's label set.
-// It is a pure function of the labels, so it changes exactly when they do and
-// an address with no labels still has a (stable, non-empty) fingerprint the
-// caller must echo back, as real Compute Engine requires.
-func addressLabelFingerprint(labels map[string]string) string {
-	keys := make([]string, 0, len(labels))
-	for k := range labels {
-		keys = append(keys, k)
-	}
-
-	sort.Strings(keys)
-
-	parts := make([]string, 0, len(keys)*2) //nolint:mnd // key and value per label
-	for _, k := range keys {
-		parts = append(parts, k, labels[k])
-	}
-
-	return fingerprintOf(append([]string{"labels"}, parts...)...)
-}
-
 // addressLabels extracts the labels map from a stored address body.
 func addressLabels(body json.RawMessage) map[string]string {
 	var withLabels struct {
@@ -61,9 +41,11 @@ func addressLabels(body json.RawMessage) map[string]string {
 // setAddressLabels handles setLabels on a regional or global address. The
 // request's labels REPLACE the whole set; the caller must send the current
 // labelFingerprint (read from a Get), and a missing or stale one is rejected
-// 412 conditionNotMet with no change applied. Success returns a DONE compute
-// Operation recorded in the shared registry, and a later Get shows the new
-// labels under a new labelFingerprint.
+// 412 conditionNotMet with no change applied. The check-and-replace is the
+// provider's (driver.GCPAddressStore.SetGCPAddressLabels), so the labels are
+// part of the snapshot. Success returns a DONE compute Operation recorded in
+// the shared registry, and a later Get shows the new labels under a new
+// labelFingerprint.
 //
 //nolint:gocritic // rp is a request-scoped value
 func (h *Handler) setAddressLabels(w http.ResponseWriter, r *http.Request, rp gcprest.ResourcePath) {
@@ -72,77 +54,29 @@ func (h *Handler) setAddressLabels(w http.ResponseWriter, r *http.Request, rp gc
 		return
 	}
 
-	scope := scopeOf(rp)
+	if h.addresses.store == nil {
+		writeAddressErr(w, errAddressesUnsupported)
+		return
+	}
 
-	status := h.addresses.replaceLabels(rp.Project, scope, rp.ResourceName, req)
+	err := h.addresses.store.SetGCPAddressLabels(r.Context(), rp.Project, scopeOf(rp), rp.ResourceName,
+		req.Labels, req.LabelFingerprint)
 
-	switch status {
-	case labelsNotFound:
+	switch {
+	case err == nil:
+	case cerrors.IsNotFound(err):
 		gcprest.WriteError(w, http.StatusNotFound, "notFound", "address "+rp.ResourceName+" not found")
 		return
-	case labelsConditionNotMet:
-		gcprest.WriteError(w, http.StatusPreconditionFailed, "conditionNotMet",
-			"Labels fingerprint either invalid or resource labels have changed")
-
+	case cerrors.IsFailedPrecondition(err):
+		gcprest.WriteError(w, http.StatusPreconditionFailed, "conditionNotMet", cerrors.Message(err))
 		return
-	case labelsInvalid:
-		gcprest.WriteError(w, http.StatusBadRequest, "invalid", "address body is not a JSON object")
+	default:
+		writeAddressErr(w, err)
 		return
-	case labelsOK:
 	}
 
 	gcprest.WriteJSON(w, http.StatusOK, h.ops.RecordDone(hostOf(r), rp.Project,
 		rp.Scope, rp.ScopeName, resourceAddresses, rp.ResourceName, setLabelsAction))
-}
-
-// labelsResult is the outcome of a replaceLabels attempt.
-type labelsResult int
-
-const (
-	labelsOK labelsResult = iota
-	labelsNotFound
-	labelsConditionNotMet
-	labelsInvalid
-)
-
-// replaceLabels swaps an address's label set under the store lock, so the
-// fingerprint check and the write are atomic against a concurrent setLabels.
-func (s *addressStore) replaceLabels(
-	project, scope, name string, req addressSetLabelsRequest,
-) labelsResult {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	body, ok := s.addresses[s.key(project, scope)][name]
-	if !ok {
-		return labelsNotFound
-	}
-
-	if req.LabelFingerprint == "" || req.LabelFingerprint != addressLabelFingerprint(addressLabels(body)) {
-		return labelsConditionNotMet
-	}
-
-	var obj map[string]any
-	if err := json.Unmarshal(body, &obj); err != nil || obj == nil {
-		return labelsInvalid
-	}
-
-	if len(req.Labels) == 0 {
-		delete(obj, "labels")
-	} else {
-		obj["labels"] = req.Labels
-	}
-
-	obj["labelFingerprint"] = addressLabelFingerprint(req.Labels)
-
-	out, err := json.Marshal(obj)
-	if err != nil {
-		return labelsInvalid
-	}
-
-	s.addresses[s.key(project, scope)][name] = out
-
-	return labelsOK
 }
 
 // addressMatches applies a compute list filter to a stored address. It extends

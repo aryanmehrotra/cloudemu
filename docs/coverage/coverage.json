@@ -11426,6 +11426,36 @@
         ]
       },
       {
+        "name": "GCPAddressStore",
+        "doc": "GCPAddressStore is the GCP-only reserved-address surface.",
+        "operations": [
+          {
+            "name": "AllocateGCPAddressIP",
+            "doc": "AllocateGCPAddressIP hands out the next IP of the provider's synthetic"
+          },
+          {
+            "name": "DeleteGCPAddress",
+            "doc": "DeleteGCPAddress removes the address, or returns NotFound."
+          },
+          {
+            "name": "GetGCPAddress",
+            "doc": "GetGCPAddress returns the address, or NotFound."
+          },
+          {
+            "name": "InsertGCPAddress",
+            "doc": "InsertGCPAddress stores a new address, returning AlreadyExists when the"
+          },
+          {
+            "name": "ListGCPAddresses",
+            "doc": "ListGCPAddresses returns every address of a project in scope, or in every"
+          },
+          {
+            "name": "SetGCPAddressLabels",
+            "doc": "SetGCPAddressLabels replaces the address's whole label set (an empty set"
+          }
+        ]
+      },
+      {
         "name": "IPAM",
         "doc": "IPAM is an OPTIONAL AWS capability (type-asserted on the vpc driver).",
         "operations": [
