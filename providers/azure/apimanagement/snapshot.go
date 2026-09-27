@@ -10,14 +10,18 @@ import (
 
 var _ snapshot.Snapshottable = (*Mock)(nil)
 
-// snapshotState is the on-disk shape: the service store keyed by its
-// (lowercased) resource id.
+// snapshotState is the on-disk shape: the live services and their child
+// resources keyed by the (lowercased) service resource id, and the
+// soft-deleted services keyed by subscription/location/name.
 type snapshotState struct {
 	Services json.RawMessage `json:"services,omitempty"`
+	Children json.RawMessage `json:"children,omitempty"`
+	Deleted  json.RawMessage `json:"deleted,omitempty"`
 }
 
-// Snapshot captures every API Management service. includeAssets is unused:
-// these resources hold no bulk object bodies.
+// Snapshot captures every API Management service, its child resources and the
+// soft-deleted services. includeAssets is unused: these resources hold no bulk
+// object bodies.
 func (m *Mock) Snapshot(_ context.Context, _ bool) (json.RawMessage, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -27,7 +31,17 @@ func (m *Mock) Snapshot(_ context.Context, _ bool) (json.RawMessage, error) {
 		return nil, fmt.Errorf("apimanagement: snapshot services: %w", err)
 	}
 
-	data, err := json.Marshal(snapshotState{Services: services})
+	children, err := m.children.Snapshot()
+	if err != nil {
+		return nil, fmt.Errorf("apimanagement: snapshot children: %w", err)
+	}
+
+	deleted, err := m.deleted.Snapshot()
+	if err != nil {
+		return nil, fmt.Errorf("apimanagement: snapshot deleted services: %w", err)
+	}
+
+	data, err := json.Marshal(snapshotState{Services: services, Children: children, Deleted: deleted})
 	if err != nil {
 		return nil, fmt.Errorf("apimanagement: marshal snapshot: %w", err)
 	}
@@ -35,7 +49,10 @@ func (m *Mock) Snapshot(_ context.Context, _ bool) (json.RawMessage, error) {
 	return data, nil
 }
 
-// Restore rebuilds every service under its original id.
+// Restore rebuilds every service, child resource and soft-deleted service under
+// its original key. Each restored service's properties block is re-materialized,
+// so a snapshot written before the provider owned the computed fields comes
+// back with them.
 func (m *Mock) Restore(_ context.Context, data json.RawMessage) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -49,12 +66,28 @@ func (m *Mock) Restore(_ context.Context, data json.RawMessage) error {
 		return fmt.Errorf("apimanagement: unmarshal snapshot: %w", err)
 	}
 
-	if len(state.Services) == 0 {
-		return nil
+	loads := []struct {
+		name string
+		raw  json.RawMessage
+		load func([]byte) error
+	}{
+		{"services", state.Services, m.services.LoadSnapshot},
+		{"children", state.Children, m.children.LoadSnapshot},
+		{"deleted services", state.Deleted, m.deleted.LoadSnapshot},
 	}
 
-	if err := m.services.LoadSnapshot(state.Services); err != nil {
-		return fmt.Errorf("apimanagement: restore services: %w", err)
+	for _, l := range loads {
+		if len(l.raw) == 0 {
+			continue
+		}
+
+		if err := l.load(l.raw); err != nil {
+			return fmt.Errorf("apimanagement: restore %s: %w", l.name, err)
+		}
+	}
+
+	for _, s := range m.services.All() {
+		s.materializeProperties()
 	}
 
 	return nil

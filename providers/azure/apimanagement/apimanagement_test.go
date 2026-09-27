@@ -80,7 +80,9 @@ func TestCreateComputedFields(t *testing.T) {
 	}
 }
 
-func TestReplaceKeepsComputedFieldsAndLocation(t *testing.T) {
+// TestReplaceKeepsStableFieldsAndRotatesEtag: a replace keeps createdAt, location
+// and the principal, but mints a new etag (every write changes it).
+func TestReplaceKeepsStableFieldsAndRotatesEtag(t *testing.T) {
 	m, clk := newMock()
 	first := create(t, m, "apim1")
 
@@ -91,13 +93,17 @@ func TestReplaceKeepsComputedFieldsAndLocation(t *testing.T) {
 	in.SkuName = sptr("premium")
 	in.SkuCapacity = i32(2)
 
-	got, created, err := m.CreateOrUpdateService(context.Background(), sub, rg, "apim1", "West Europe", in)
+	got, created, err := m.CreateOrUpdateService(context.Background(), sub, rg, "apim1", "eastus", in)
 	if err != nil || created {
 		t.Fatalf("replace: err=%v created=%v", err, created)
 	}
 
-	if !got.CreatedAt.Equal(first.CreatedAt) || got.Etag != first.Etag || got.Location != "East US" {
+	if !got.CreatedAt.Equal(first.CreatedAt) || got.Location != "East US" {
 		t.Errorf("replace changed stable fields: %+v", got)
+	}
+
+	if got.Etag == first.Etag || got.Etag == "" {
+		t.Errorf("replace must rotate the etag, got %q (was %q)", got.Etag, first.Etag)
 	}
 
 	if got.SkuName != "Premium" || got.SkuCapacity != 2 {

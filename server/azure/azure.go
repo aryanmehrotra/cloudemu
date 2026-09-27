@@ -220,8 +220,9 @@ type Drivers struct {
 	// IoTHub serves Microsoft.Devices/IotHubs plus its listkeys /
 	// getKeysForKeyName actions and the nested event-hub consumer groups.
 	IoTHub iothubsrv.Store
-	// APIManagement serves Microsoft.ApiManagement/service (the API Management
-	// service control plane).
+	// APIManagement serves Microsoft.ApiManagement: the service control plane,
+	// its soft-deleted services, checkNameAvailability and the child resources
+	// around a service's create, refresh and destroy.
 	APIManagement apimanagementsrv.Store
 	// SQLVirtualMachine serves Microsoft.SqlVirtualMachine/sqlVirtualMachines:
 	// the SQL-management overlay on a compute VM.
@@ -1127,7 +1128,8 @@ func New(d Drivers) http.Handler {
 		srv.Register(iotHubHandler)
 	}
 
-	// API Management claims Microsoft.ApiManagement/service: a distinct ARM
+	// API Management claims Microsoft.ApiManagement (service, deletedservices,
+	// locations/{l}/deletedservices, checkNameAvailability): a distinct ARM
 	// provider name from every other Azure handler, so registration order is
 	// unconstrained.
 	if apiManagementHandler != nil {

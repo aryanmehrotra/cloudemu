@@ -9,21 +9,6 @@ import (
 	"github.com/stackshy/cloudemu/v2/providers/azure/apimanagement"
 )
 
-const (
-	// skuConsumption is the serverless tier, which has no dedicated portal,
-	// management or SCM endpoints and runs on the multi-tenant platform.
-	skuConsumption = "Consumption"
-
-	// platformDedicated / platformConsumption are the computePlatform versions
-	// Azure reports for dedicated tiers and for the Consumption tier.
-	platformDedicated   = "stv2"
-	platformConsumption = "mtv1"
-
-	// notificationSenderDefault is the sender address Azure assigns when the
-	// caller sets none.
-	notificationSenderDefault = "apimgmt-noreply@mail.windowsazure.com"
-)
-
 // serviceRequest is the ARM service PUT/PATCH body. location, tags, zones, sku
 // and identity are top-level; the writable service properties live under
 // properties and round-trip verbatim.
@@ -73,16 +58,98 @@ type serviceResponse struct {
 	Properties json.RawMessage   `json:"properties"`
 }
 
-// serviceListResponse is the ARM service list envelope. nextLink is omitted:
-// the emulator returns a single page.
-type serviceListResponse struct {
-	Value []serviceResponse `json:"value"`
+// listResponse is the ARM/APIM list envelope; nextLink continues a paged list.
+type listResponse[T any] struct {
+	Value    []T    `json:"value"`
+	Count    *int   `json:"count,omitempty"`
+	NextLink string `json:"nextLink,omitempty"`
+}
+
+// deletedServiceResponse is a soft-deleted service
+// (Microsoft.ApiManagement/deletedservices).
+type deletedServiceResponse struct {
+	ID         string                   `json:"id"`
+	Name       string                   `json:"name"`
+	Type       string                   `json:"type"`
+	Location   string                   `json:"location"`
+	Properties deletedServiceProperties `json:"properties"`
+}
+
+type deletedServiceProperties struct {
+	ServiceID          string `json:"serviceId"`
+	DeletionDate       string `json:"deletionDate"`
+	ScheduledPurgeDate string `json:"scheduledPurgeDate"`
+}
+
+// childResponse is a service child resource (api, product, policy, portal
+// setting).
+type childResponse struct {
+	ID         string          `json:"id"`
+	Name       string          `json:"name"`
+	Type       string          `json:"type"`
+	Properties json.RawMessage `json:"properties"`
+}
+
+// childRequest is a child resource PUT/PATCH body.
+type childRequest struct {
+	Properties json.RawMessage `json:"properties"`
+}
+
+// policyRequest is the service policy PUT body.
+type policyRequest struct {
+	Properties struct {
+		Value  string `json:"value"`
+		Format string `json:"format"`
+	} `json:"properties"`
+}
+
+// tenantAccessResponse is a tenant access entity as GET/PATCH return it (no
+// keys).
+type tenantAccessResponse struct {
+	ID         string                 `json:"id"`
+	Name       string                 `json:"name"`
+	Type       string                 `json:"type"`
+	Properties tenantAccessProperties `json:"properties"`
+}
+
+type tenantAccessProperties struct {
+	ID          string `json:"id"`
+	PrincipalID string `json:"principalId"`
+	Enabled     bool   `json:"enabled"`
+}
+
+// tenantAccessSecrets is the tenant access listSecrets body.
+type tenantAccessSecrets struct {
+	ID           string `json:"id"`
+	PrincipalID  string `json:"principalId"`
+	PrimaryKey   string `json:"primaryKey"`
+	SecondaryKey string `json:"secondaryKey"`
+	Enabled      bool   `json:"enabled"`
+}
+
+// tenantAccessRequest is the tenant access PATCH body.
+type tenantAccessRequest struct {
+	Properties struct {
+		Enabled *bool `json:"enabled"`
+	} `json:"properties"`
+}
+
+// nameAvailabilityRequest / nameAvailabilityResponse are the
+// checkNameAvailability body and verdict.
+type nameAvailabilityRequest struct {
+	Name string `json:"name"`
+}
+
+type nameAvailabilityResponse struct {
+	NameAvailable bool   `json:"nameAvailable"`
+	Reason        string `json:"reason"`
+	Message       string `json:"message,omitempty"`
 }
 
 // serviceInputFromRequest builds a service create/update Input from a request
-// body.
-func serviceInputFromRequest(req *serviceRequest) apimanagement.ServiceInput {
-	in := apimanagement.ServiceInput{Tags: req.Tags, Zones: req.Zones, Properties: req.Properties}
+// body and its If-Match header.
+func serviceInputFromRequest(req *serviceRequest, ifMatch string) apimanagement.ServiceInput {
+	in := apimanagement.ServiceInput{Tags: req.Tags, Zones: req.Zones, Properties: req.Properties, IfMatch: ifMatch}
 
 	if req.Sku != nil {
 		if req.Sku.Name != "" {
@@ -119,7 +186,8 @@ func userAssignedKeys(m map[string]json.RawMessage) []string {
 }
 
 // toServiceResponse projects a stored service onto the ARM wire
-// representation, injecting the computed read-only properties.
+// representation. The properties block is the provider's, verbatim: it already
+// carries the defaults and computed fields.
 func toServiceResponse(s *apimanagement.Service) serviceResponse {
 	return serviceResponse{
 		ID:         s.ARMID(),
@@ -131,80 +199,43 @@ func toServiceResponse(s *apimanagement.Service) serviceResponse {
 		Sku:        skuResponse{Name: s.SkuName, Capacity: s.SkuCapacity},
 		Identity:   toIdentityWire(s.Identity),
 		Etag:       s.Etag,
-		Properties: responseProperties(s),
+		Properties: s.Properties,
 	}
 }
 
-// responseProperties overlays the computed read-only fields onto the stored,
-// verbatim properties block, filling Azure's defaults for the few writable
-// fields the caller left unset.
-func responseProperties(s *apimanagement.Service) json.RawMessage {
-	obj := map[string]any{}
-	if len(s.Properties) > 0 {
-		if err := json.Unmarshal(s.Properties, &obj); err != nil {
-			obj = map[string]any{}
-		}
+// toDeletedServiceResponse projects a soft-deleted service onto the wire.
+func toDeletedServiceResponse(d *apimanagement.DeletedService) deletedServiceResponse {
+	return deletedServiceResponse{
+		ID:       d.ARMID(),
+		Name:     d.Service.Name,
+		Type:     providerName + "/deletedservices",
+		Location: d.Service.Location,
+		Properties: deletedServiceProperties{
+			ServiceID:          d.Service.ARMID(),
+			DeletionDate:       d.DeletionDate.UTC().Format(time.RFC3339),
+			ScheduledPurgeDate: d.ScheduledPurgeDate.UTC().Format(time.RFC3339),
+		},
 	}
-
-	for k, v := range map[string]any{
-		"virtualNetworkType":      "None",
-		"publicNetworkAccess":     "Enabled",
-		"notificationSenderEmail": notificationSenderDefault,
-		"disableGateway":          false,
-	} {
-		if _, set := obj[k]; !set {
-			obj[k] = v
-		}
-	}
-
-	for k, v := range computedProperties(s) {
-		obj[k] = v
-	}
-
-	raw, err := json.Marshal(obj)
-	if err != nil {
-		return s.Properties
-	}
-
-	return raw
 }
 
-// computedProperties returns the read-only properties Azure mints: the
-// provisioning state, creation time, platform version and the endpoint URLs.
-// The Consumption tier has only a gateway, so its portal, management and SCM
-// endpoints are absent.
-func computedProperties(s *apimanagement.Service) map[string]any {
-	out := map[string]any{
-		"provisioningState":       s.ProvisioningState,
-		"targetProvisioningState": "",
-		"createdAtUtc":            s.CreatedAt.UTC().Format(time.RFC3339),
-		"gatewayUrl":              s.Endpoints().Gateway,
-		"publicIPAddresses":       []string{},
-		"platformVersion":         platformDedicated,
+// toChildResponse projects a child resource under serviceID/segment.
+func toChildResponse(serviceID, segment string, c *apimanagement.ChildResource) childResponse {
+	return childResponse{
+		ID:         serviceID + "/" + segment + "/" + c.Name,
+		Name:       c.Name,
+		Type:       serviceArmType + "/" + segment,
+		Properties: c.Properties,
 	}
-
-	if s.SkuName == skuConsumption {
-		out["platformVersion"] = platformConsumption
-
-		return out
-	}
-
-	ep := s.Endpoints()
-	out["gatewayRegionalUrl"] = regionalGatewayURL(s)
-	out["portalUrl"] = ep.Portal
-	out["developerPortalUrl"] = ep.DeveloperPortal
-	out["managementApiUrl"] = ep.ManagementAPI
-	out["scmUrl"] = ep.Scm
-
-	return out
 }
 
-// regionalGatewayURL renders the primary region's gateway endpoint,
-// https://<name>-<region>-01.regional.azure-api.net.
-func regionalGatewayURL(s *apimanagement.Service) string {
-	region := strings.ToLower(strings.ReplaceAll(s.Location, " ", ""))
-
-	return "https://" + strings.ToLower(s.Name) + "-" + region + "-01.regional.azure-api.net"
+// toTenantAccessResponse projects a tenant access entity without its keys.
+func toTenantAccessResponse(serviceID string, t *apimanagement.TenantAccess) tenantAccessResponse {
+	return tenantAccessResponse{
+		ID:         serviceID + "/tenant/" + t.Name,
+		Name:       t.Name,
+		Type:       serviceArmType + "/tenant",
+		Properties: tenantAccessProperties{ID: t.Name, PrincipalID: t.PrincipalID, Enabled: t.Enabled},
+	}
 }
 
 // toIdentityWire projects a stored managed identity onto the wire block,

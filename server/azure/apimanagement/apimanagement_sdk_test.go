@@ -20,6 +20,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
 
 	"github.com/stackshy/cloudemu/v2"
+	azureprov "github.com/stackshy/cloudemu/v2/providers/azure"
 	azureserver "github.com/stackshy/cloudemu/v2/server/azure"
 )
 
@@ -38,15 +39,19 @@ func (fakeCred) GetToken(context.Context, policy.TokenRequestOptions) (azcore.Ac
 }
 
 type fixture struct {
-	ts  *httptest.Server
-	svc *armapimanagement.ServiceClient
-	rgs *armresources.ResourceGroupsClient
+	ts   *httptest.Server
+	prov *azureprov.Provider
+	opts *arm.ClientOptions
+	cf   *armapimanagement.ClientFactory
+	svc  *armapimanagement.ServiceClient
+	rgs  *armresources.ResourceGroupsClient
 }
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 
-	ts := httptest.NewTLSServer(azureserver.NewFromProvider(cloudemu.NewAzure()))
+	prov := cloudemu.NewAzure()
+	ts := httptest.NewTLSServer(azureserver.NewFromProvider(prov))
 	t.Cleanup(ts.Close)
 
 	opts := &arm.ClientOptions{ClientOptions: azcore.ClientOptions{
@@ -70,7 +75,7 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatalf("resource groups client: %v", err)
 	}
 
-	f := &fixture{ts: ts, svc: cf.NewServiceClient(), rgs: rgs}
+	f := &fixture{ts: ts, prov: prov, opts: opts, cf: cf, svc: cf.NewServiceClient(), rgs: rgs}
 	f.ensureRG(t, rgName)
 	f.ensureRG(t, rgOther)
 
@@ -249,8 +254,12 @@ func assertPatched(t *testing.T, got, before *armapimanagement.ServiceResource) 
 		t.Errorf("PATCH dropped unnamed properties: %v", got.Properties.CustomProperties)
 	}
 
-	if deref(got.Identity.PrincipalID) != deref(before.Identity.PrincipalID) || deref(got.Etag) != deref(before.Etag) {
-		t.Error("PATCH re-minted the identity or etag")
+	if deref(got.Identity.PrincipalID) != deref(before.Identity.PrincipalID) {
+		t.Error("PATCH re-minted the identity")
+	}
+
+	if deref(got.Etag) == deref(before.Etag) {
+		t.Error("PATCH must rotate the etag")
 	}
 }
 
@@ -315,8 +324,8 @@ func TestSDKConsumptionTier(t *testing.T) {
 	}
 }
 
-// TestSDKValidationErrors asserts every rejected create surfaces as an ARM 400
-// through the real client.
+// TestSDKValidationErrors asserts every rejected create surfaces as APIM's 400
+// ValidationError through the real client.
 func TestSDKValidationErrors(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -346,7 +355,7 @@ func TestSDKValidationErrors(t *testing.T) {
 			}
 
 			_, err := f.svc.BeginCreateOrUpdate(ctx, rgName, tc.name, body, nil)
-			assertStatus(t, err, http.StatusBadRequest, "InvalidParameter")
+			assertStatus(t, err, http.StatusBadRequest, "ValidationError")
 		})
 	}
 }

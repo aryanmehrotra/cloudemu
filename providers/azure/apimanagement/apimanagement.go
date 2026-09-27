@@ -1,25 +1,38 @@
 // Package apimanagement provides an in-memory mock of Azure API Management
-// (Microsoft.ApiManagement/service), the ARM control plane only. It manages the
+// (Microsoft.ApiManagement), the ARM control plane only. It manages the
 // service lifecycle (create-or-update, get, patch, delete, list-by-group,
-// list-by-subscription), the service SKU (name + capacity), availability zones
-// and the system/user-assigned managed identity.
+// list-by-subscription), the service SKU (name + capacity, bounded per tier),
+// availability zones (Premium only), the system/user-assigned managed identity,
+// the global name reservation (checkNameAvailability), and soft delete: a
+// deleted service is kept for 48 hours under
+// locations/{location}/deletedservices/{name}, where it can be read, purged,
+// or recovered by a PUT with properties.restore = true.
 //
-// The API Management data plane (the gateway that proxies traffic, the
-// developer portal) and the service's child resources (apis, products,
-// subscriptions, policies, named values, backends, loggers, ...) are out of
-// scope, as are backup/restore, network-configuration updates and the
-// soft-deleted services (deletedservices) surface.
+// A service also carries the child resources an infrastructure-as-code tool
+// touches around create, refresh and destroy: the sample Echo API and the
+// Starter/Unlimited products every non-Consumption service is born with (list,
+// get, delete), the service-level policy (get, put, delete), the developer
+// portal sign-in/sign-up/delegation settings (get, put) and the tenant access
+// information (get, patch, listSecrets). Creating APIs, products, operations,
+// subscriptions, backends, named values and loggers is out of scope, as are the
+// gateway data plane, backup/restore and network-configuration updates.
 //
-// Every service-minted field stays stable for the lifetime of the resource so
-// infrastructure-as-code tools (Terraform's azurerm_api_management) see no drift
-// on re-plan: id/name, provisioningState ("Succeeded"), createdAtUtc, etag and
-// the system-assigned identity's principalId/tenantId are minted once at create
-// and byte-stable across every read and patch. The endpoint host names
-// (gateway, portal, developer portal, management, scm) derive from the service
-// name, exactly as Azure derives them.
+// The provider owns the whole resource: the properties block it stores and
+// returns already holds Azure's defaults for unset writable fields and the
+// computed read-only fields (provisioningState, createdAtUtc, platformVersion,
+// the endpoint URLs derived from the name and location), so the Go library and
+// the HTTP server return the same resource. id/name, createdAtUtc and the
+// system-assigned identity's principalId/tenantId are minted once and stay
+// stable; the etag changes on every write and a non-wildcard If-Match that no
+// longer matches is rejected with FailedPrecondition.
 //
-// The writable properties block (publisherEmail, publisherName and every other
-// caller-set property) is stored as raw JSON and round-trips verbatim.
+// Terraform: the requests terraform-provider-azurerm v4 makes for
+// azurerm_api_management create, refresh and destroy (with its default
+// recover_soft_deleted and purge_soft_delete_on_destroy features) are served,
+// and two refreshes read back identical state. That was verified by replaying
+// the provider's request sequence through the official SDK clients
+// (server/azure/apimanagement TestSDKTerraformCreateReadDestroy), not by running
+// a terraform binary, so an empty plan after apply is not yet proven.
 package apimanagement
 
 import (
@@ -53,6 +66,9 @@ const (
 
 	// hostSuffix is the DNS suffix every API Management endpoint lives under.
 	hostSuffix = ".azure-api.net"
+
+	// wildcardETag is the If-Match value that matches any current version.
+	wildcardETag = "*"
 )
 
 // ManagedIdentity is a service's top-level managed identity. For a
@@ -67,9 +83,9 @@ type ManagedIdentity struct {
 }
 
 // Service is a stored Microsoft.ApiManagement/service resource. Subscription,
-// ResourceGroup and Name preserve the caller's casing; the computed fields are
-// minted at create and never regenerated on a read. Properties holds the
-// writable properties block and round-trips verbatim.
+// ResourceGroup and Name preserve the caller's casing. Properties is the full
+// properties block as Azure returns it: the caller's writable properties,
+// Azure's defaults for the unset ones and the computed read-only fields.
 type Service struct {
 	Subscription  string            `json:"subscription"`
 	ResourceGroup string            `json:"resourceGroup"`
@@ -84,7 +100,7 @@ type Service struct {
 
 	Properties json.RawMessage `json:"properties,omitempty"`
 
-	// Computed, stable fields.
+	// Computed fields. Etag changes on every write; the rest are stable.
 	ProvisioningState string    `json:"provisioningState"`
 	Etag              string    `json:"etag"`
 	CreatedAt         time.Time `json:"createdAt"`
@@ -123,7 +139,8 @@ func (s *Service) endpoint(infix string) string {
 
 // ServiceInput carries the mutable fields of a service create/update request.
 // A nil pointer/map/slice means "not supplied": on a PATCH the stored value is
-// preserved, so the request overlays only what it names.
+// preserved, so the request overlays only what it names. IfMatch, when set to
+// anything but "*", makes the write conditional on the stored etag.
 type ServiceInput struct {
 	Tags        map[string]string
 	Zones       []string
@@ -131,6 +148,7 @@ type ServiceInput struct {
 	SkuCapacity *int32
 	Identity    *ManagedIdentity
 	Properties  json.RawMessage
+	IfMatch     string
 }
 
 // Mock is the in-memory backend for API Management services.
@@ -138,6 +156,8 @@ type Mock struct {
 	mu       sync.RWMutex
 	clock    config.Clock
 	services *memstore.Store[*Service]
+	children *memstore.Store[*Children]
+	deleted  *memstore.Store[*DeletedService]
 }
 
 // New creates an empty API Management mock. It falls back to the real clock
@@ -148,7 +168,12 @@ func New(opts *config.Options) *Mock {
 		clock = opts.Clock
 	}
 
-	return &Mock{clock: clock, services: memstore.New[*Service]()}
+	return &Mock{
+		clock:    clock,
+		services: memstore.New[*Service](),
+		children: memstore.New[*Children](),
+		deleted:  memstore.New[*DeletedService](),
+	}
 }
 
 // serviceKey is the case-insensitive store key for a service.
@@ -158,13 +183,20 @@ func serviceKey(sub, rg, name string) string {
 
 // CreateOrUpdateService creates a new service or replaces an existing one (ARM
 // PUT semantics: tags, zones, identity and the properties block are replaced
-// wholesale). The computed fields (provisioningState, etag, createdAtUtc) are
-// minted once at create and preserved across updates; location is immutable in
-// real Azure and is preserved on update. It returns the stored service and
-// whether it was newly created.
+// wholesale). The service name is a global DNS label, so a name already held by
+// another live service (in any subscription or group) is ErrNameNotAvailable
+// and one held by a soft-deleted service is ErrSoftDeleted, unless the request
+// sets properties.restore to recover it. Location is immutable: a replace that
+// names another location is ErrLocationMismatch. createdAtUtc is minted once;
+// the etag changes on every write. It returns the stored service and whether it
+// was newly created.
 func (m *Mock) CreateOrUpdateService(
 	_ context.Context, sub, rg, name, location string, in *ServiceInput,
 ) (Service, bool, error) {
+	if restoreRequested(in.Properties) {
+		return m.restoreService(sub, rg, name, location, in.IfMatch)
+	}
+
 	if err := validateCreate(sub, rg, name, location, in); err != nil {
 		return Service{}, false, err
 	}
@@ -175,11 +207,25 @@ func (m *Mock) CreateOrUpdateService(
 	k := serviceKey(sub, rg, name)
 
 	existing, existed := m.services.Get(k)
+	if err := checkIfMatch(existed, existing, in.IfMatch, name); err != nil {
+		return Service{}, false, err
+	}
 
 	var s Service
+
 	if existed {
+		if normalizeLocation(existing.Location) != normalizeLocation(location) {
+			return Service{}, false, coded(ErrLocationMismatch, cerrors.Newf(cerrors.AlreadyExists,
+				"the resource %q already exists in location %q; a resource cannot be moved to %q",
+				name, existing.Location, location))
+		}
+
 		s = *existing
 	} else {
+		if err := m.nameTakenLocked(name); err != nil {
+			return Service{}, false, err
+		}
+
 		s = m.newService(sub, rg, name, location)
 	}
 
@@ -189,17 +235,83 @@ func (m *Mock) CreateOrUpdateService(
 	s.SkuCapacity = *in.SkuCapacity
 	s.Identity = resolveIdentity(in.Identity, sub, rg, name)
 	s.Properties = append(json.RawMessage(nil), in.Properties...)
+	m.commitLocked(k, &s)
 
-	m.services.Set(k, &s)
+	if !existed {
+		m.children.Set(k, seedChildren(&s))
+	}
 
 	return cloneService(&s), !existed, nil
+}
+
+// commitLocked re-materializes the full properties block, rotates the etag and
+// stores the service. The caller holds m.mu.
+func (m *Mock) commitLocked(k string, s *Service) {
+	s.materializeProperties()
+	s.Etag = nextETag(k, s)
+	m.services.Set(k, s)
+}
+
+// nextETag derives a new etag from the resource key, its creation time and the
+// previous etag, so every write yields a different value (If-Match optimistic
+// concurrency works) while the sequence stays deterministic and survives a
+// snapshot round trip. Seeding with the creation time keeps a re-created
+// service from reusing the etags of an earlier one with the same name.
+func nextETag(k string, s *Service) string {
+	return idgen.SyntheticGUID("apimanagement/etag/" + k + "/" + s.CreatedAt.String() + "/" + s.Etag)
+}
+
+// checkIfMatch enforces a conditional write: an If-Match other than "*" must
+// equal the stored etag, and a conditional write on a missing resource fails.
+func checkIfMatch(existed bool, s *Service, ifMatch, name string) error {
+	if ifMatch == "" || ifMatch == wildcardETag {
+		return nil
+	}
+
+	if !existed || !etagMatches(s.Etag, ifMatch) {
+		return cerrors.Newf(cerrors.FailedPrecondition,
+			"the If-Match etag %s does not match the current state of API Management service %q", ifMatch, name)
+	}
+
+	return nil
+}
+
+// etagMatches compares two etags ignoring the weak-validator prefix and quotes,
+// which clients add or strip inconsistently.
+func etagMatches(stored, given string) bool {
+	norm := func(e string) string {
+		return strings.Trim(strings.TrimPrefix(strings.TrimSpace(e), "W/"), `"`)
+	}
+
+	return norm(stored) == norm(given)
+}
+
+// nameTakenLocked reports ErrNameNotAvailable when a live service anywhere
+// already holds name, or ErrSoftDeleted when a soft-deleted one does. Service
+// names are global DNS labels (<name>.azure-api.net). The caller holds m.mu.
+func (m *Mock) nameTakenLocked(name string) error {
+	for _, s := range m.services.All() {
+		if strings.EqualFold(s.Name, name) {
+			return coded(ErrNameNotAvailable, cerrors.Newf(cerrors.AlreadyExists,
+				"API Management service name %q is already in use: %s%s is taken", name, strings.ToLower(name), hostSuffix))
+		}
+	}
+
+	if d := m.deletedByNameLocked(name); d != nil {
+		return coded(ErrSoftDeleted, cerrors.Newf(cerrors.AlreadyExists,
+			"API Management service %q is soft-deleted in location %q; recover it (properties.restore = true) "+
+				"or purge it before reusing the name", name, d.Service.Location))
+	}
+
+	return nil
 }
 
 // UpdateService applies an ARM PATCH: tags and zones are replaced wholesale
 // when supplied, sku/identity are re-resolved only when supplied, and the
 // properties block is merged key-by-key onto the stored block. The merged
 // result is re-validated, so a PATCH cannot blank the publisher fields or leave
-// an invalid SKU/capacity pair. A PATCH on a missing service is a NotFound.
+// an invalid SKU/capacity/zones combination. A PATCH on a missing service is a
+// NotFound.
 func (m *Mock) UpdateService(_ context.Context, sub, rg, name string, in *ServiceInput) (Service, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -211,6 +323,10 @@ func (m *Mock) UpdateService(_ context.Context, sub, rg, name string, in *Servic
 		return Service{}, notFound(name)
 	}
 
+	if err := checkIfMatch(true, existing, in.IfMatch, name); err != nil {
+		return Service{}, err
+	}
+
 	s := *existing
 	applyPatch(&s, in, sub, rg, name)
 
@@ -218,11 +334,15 @@ func (m *Mock) UpdateService(_ context.Context, sub, rg, name string, in *Servic
 		return Service{}, err
 	}
 
+	if err := validateZones(s.SkuName, s.Zones); err != nil {
+		return Service{}, err
+	}
+
 	if err := validatePublisher(s.Properties); err != nil {
 		return Service{}, err
 	}
 
-	m.services.Set(k, &s)
+	m.commitLocked(k, &s)
 
 	return cloneService(&s), nil
 }
@@ -256,8 +376,7 @@ func applyPatch(s *Service, in *ServiceInput, sub, rg, name string) {
 }
 
 // newService seeds a fresh service with its immutable identity and its
-// computed, stable fields. The etag derives deterministically from the resource
-// id so it is stable yet distinct per service.
+// computed, stable fields.
 func (m *Mock) newService(sub, rg, name, location string) Service {
 	return Service{
 		Subscription:      sub,
@@ -265,7 +384,6 @@ func (m *Mock) newService(sub, rg, name, location string) Service {
 		Name:              name,
 		Location:          location,
 		ProvisioningState: stateSucceeded,
-		Etag:              idgen.SyntheticGUID("apimanagement/etag/" + serviceKey(sub, rg, name)),
 		CreatedAt:         m.clock.Now().UTC().Truncate(time.Second),
 	}
 }
@@ -283,12 +401,39 @@ func (m *Mock) GetService(_ context.Context, sub, rg, name string) (Service, err
 	return cloneService(s), nil
 }
 
-// DeleteService removes the service, reporting whether it existed.
-func (m *Mock) DeleteService(_ context.Context, sub, rg, name string) (bool, error) {
+// DeleteService soft-deletes the service, reporting whether it existed. It is
+// DeleteServiceIfMatch with no precondition.
+func (m *Mock) DeleteService(ctx context.Context, sub, rg, name string) (bool, error) {
+	return m.DeleteServiceIfMatch(ctx, sub, rg, name, "")
+}
+
+// DeleteServiceIfMatch soft-deletes the service, as Azure does for every delete
+// since API version 2020-06-01-preview: the service leaves the live store and is
+// kept, with its child resources, under
+// locations/{location}/deletedservices/{name} until it is purged, recovered or
+// its 48-hour retention lapses. It reports whether the service existed; a
+// non-wildcard ifMatch that does not equal the stored etag is a
+// FailedPrecondition.
+func (m *Mock) DeleteServiceIfMatch(_ context.Context, sub, rg, name, ifMatch string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	return m.services.Delete(serviceKey(sub, rg, name)), nil
+	k := serviceKey(sub, rg, name)
+
+	s, ok := m.services.Get(k)
+	if ifMatch != "" && ifMatch != wildcardETag {
+		if err := checkIfMatch(ok, s, ifMatch, name); err != nil {
+			return false, err
+		}
+	}
+
+	if !ok {
+		return false, nil
+	}
+
+	m.softDeleteLocked(k, s)
+
+	return true, nil
 }
 
 // ListServicesByResourceGroup returns every service in the group, sorted by
@@ -312,19 +457,45 @@ func (m *Mock) DiscoverServices(_ context.Context) ([]Service, error) {
 	return m.filterServices(func(*Service) bool { return true }), nil
 }
 
-// PurgeResourceGroup deletes every service under sub/rg, so a resource-group
-// delete cascades into its API Management services.
+// PurgeResourceGroup soft-deletes every service under sub/rg, so a
+// resource-group delete cascades into its API Management services exactly as a
+// service delete does.
 func (m *Mock) PurgeResourceGroup(_ context.Context, sub, rg string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	for k, s := range m.services.All() {
 		if strings.EqualFold(s.Subscription, sub) && strings.EqualFold(s.ResourceGroup, rg) {
-			m.services.Delete(k)
+			m.softDeleteLocked(k, s)
 		}
 	}
 
 	return nil
+}
+
+// NameAvailability is the checkNameAvailability verdict.
+type NameAvailability struct {
+	Available bool
+	Reason    string // "Valid", "Invalid" or "AlreadyExists"
+	Message   string
+}
+
+// CheckNameAvailability reports whether name can be used for a new service. The
+// name is a global DNS label, so any live or soft-deleted service holding it,
+// in any subscription, makes it unavailable.
+func (m *Mock) CheckNameAvailability(_ context.Context, name string) NameAvailability {
+	if !validName(name) {
+		return NameAvailability{Reason: "Invalid", Message: cerrors.Message(validateName(name))}
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if err := m.nameTakenLocked(name); err != nil {
+		return NameAvailability{Reason: "AlreadyExists", Message: cerrors.Message(err)}
+	}
+
+	return NameAvailability{Available: true, Reason: "Valid"}
 }
 
 // filterServices returns the services matching pred, sorted by name.

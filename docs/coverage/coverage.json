@@ -502,10 +502,28 @@
         "name": "ARMID"
       },
       {
+        "name": "CheckNameAvailability"
+      },
+      {
         "name": "CreateOrUpdateService"
       },
       {
+        "name": "DelegationValidationKey"
+      },
+      {
+        "name": "DeleteAPI"
+      },
+      {
+        "name": "DeletePolicy"
+      },
+      {
+        "name": "DeleteProduct"
+      },
+      {
         "name": "DeleteService"
+      },
+      {
+        "name": "DeleteServiceIfMatch"
       },
       {
         "name": "DiscoverServices"
@@ -514,7 +532,34 @@
         "name": "Endpoints"
       },
       {
+        "name": "GetAPI"
+      },
+      {
+        "name": "GetDeletedService"
+      },
+      {
+        "name": "GetPolicy"
+      },
+      {
+        "name": "GetPortalSetting"
+      },
+      {
+        "name": "GetProduct"
+      },
+      {
         "name": "GetService"
+      },
+      {
+        "name": "GetTenantAccess"
+      },
+      {
+        "name": "ListAPIs"
+      },
+      {
+        "name": "ListDeletedServices"
+      },
+      {
+        "name": "ListProducts"
       },
       {
         "name": "ListServicesByResourceGroup"
@@ -523,10 +568,25 @@
         "name": "ListServicesBySubscription"
       },
       {
+        "name": "PurgeDeletedService"
+      },
+      {
         "name": "PurgeResourceGroup"
       },
       {
+        "name": "PutPolicy"
+      },
+      {
+        "name": "PutPortalSetting"
+      },
+      {
+        "name": "RegionalGatewayURL"
+      },
+      {
         "name": "UpdateService"
+      },
+      {
+        "name": "UpdateTenantAccess"
       }
     ],
     "providers": {

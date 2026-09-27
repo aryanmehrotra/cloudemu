@@ -29,8 +29,6 @@ func (d apiManagementDiscovery) DiscoverResources(
 	return projectDiscovery(items, func(s *apimanagement.Service) resourcediscovery.DiscoveredResource {
 		props := map[string]any{
 			propProvisioningState: s.ProvisioningState,
-			"sku":                 s.SkuName,
-			"skuCapacity":         s.SkuCapacity,
 			"gatewayUrl":          s.Endpoints().Gateway,
 		}
 
@@ -41,7 +39,12 @@ func (d apiManagementDiscovery) DiscoverResources(
 			ARN:     s.ARMID(),
 			Region:  s.Location,
 			Tags:    s.Tags,
-			Attrs:   resourcediscovery.Attributes{Properties: props},
+			Attrs: resourcediscovery.Attributes{
+				SKU:         s.SkuName,
+				SKUCapacity: int(s.SkuCapacity),
+				Zones:       append([]string(nil), s.Zones...),
+				Properties:  props,
+			},
 		}
 	}), nil
 }
