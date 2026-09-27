@@ -19,11 +19,19 @@ const (
 	// maxBypassCacheHeaders is how many bypassCacheOnRequestHeaders are allowed.
 	maxBypassCacheHeaders = 5
 
-	cacheModeCacheAllStatic = "CACHE_ALL_STATIC"
+	cacheModeCacheAllStatic   = "CACHE_ALL_STATIC"
+	cacheModeUseOriginHeaders = "USE_ORIGIN_HEADERS"
+	cacheModeForceCacheAll    = "FORCE_CACHE_ALL"
+
+	// defaultCDNTTL is the documented defaultTtl and clientTtl (1 hour), and
+	// defaultCDNMaxTTL the documented maxTtl (1 day), for a mode that uses them.
+	defaultCDNTTL    = 3600
+	defaultCDNMaxTTL = 86400
 
 	fieldCacheMode  = "cacheMode"
 	fieldDefaultTTL = "defaultTtl"
 	fieldMaxTTL     = "maxTtl"
+	fieldClientTTL  = "clientTtl"
 
 	fieldService        = "service"
 	fieldDefaultService = "defaultService"
@@ -38,9 +46,9 @@ var rfc1035Name = regexp.MustCompile(`^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$`)
 //
 //nolint:gochecknoglobals // immutable lookup table, not mutable state
 var validCacheModes = map[string]bool{
-	cacheModeCacheAllStatic: true,
-	"USE_ORIGIN_HEADERS":    true,
-	"FORCE_CACHE_ALL":       true,
+	cacheModeCacheAllStatic:   true,
+	cacheModeUseOriginHeaders: true,
+	cacheModeForceCacheAll:    true,
 }
 
 // validCompressionModes are the compressionMode values the API accepts.
@@ -75,7 +83,7 @@ func validateRFC1035Name(name string) error {
 
 // applyBackendBucketDefaults fills cdnPolicy.cacheMode with the documented
 // default (CACHE_ALL_STATIC) when Cloud CDN is enabled or a cdnPolicy is given
-// without one.
+// without one, then the TTLs the chosen mode uses (applyCDNTTLDefaults).
 func applyBackendBucketDefaults(body map[string]any) {
 	enabled, _ := body["enableCdn"].(bool)
 	policy, hasPolicy := body["cdnPolicy"].(map[string]any)
@@ -91,6 +99,74 @@ func applyBackendBucketDefaults(body map[string]any) {
 
 	if _, ok := policy[fieldCacheMode]; !ok {
 		policy[fieldCacheMode] = cacheModeCacheAllStatic
+	}
+
+	applyCDNTTLDefaults(policy)
+}
+
+// applyCDNTTLDefaults fills the TTLs GCP reports for a cacheMode when the
+// caller left them out: CACHE_ALL_STATIC gets defaultTtl 3600, maxTtl 86400 and
+// clientTtl 3600; FORCE_CACHE_ALL gets defaultTtl and clientTtl 3600 (it has no
+// maxTtl); USE_ORIGIN_HEADERS gets none, because it takes every TTL from the
+// origin. A filled defaultTtl/clientTtl never exceeds an explicit smaller
+// maxTtl, so a default can never be the reason a request is refused.
+func applyCDNTTLDefaults(policy map[string]any) {
+	mode, _ := policy[fieldCacheMode].(string)
+	if mode == cacheModeUseOriginHeaders {
+		return
+	}
+
+	limit := int64(math.MaxInt64)
+
+	if mode == cacheModeCacheAllStatic {
+		if _, ok := policy[fieldMaxTTL]; !ok {
+			policy[fieldMaxTTL] = float64(defaultCDNMaxTTL)
+		}
+
+		if m, ok := jsonInt(policy[fieldMaxTTL]); ok {
+			limit = m
+		}
+	}
+
+	for _, f := range []string{fieldDefaultTTL, fieldClientTTL} {
+		if _, ok := policy[f]; !ok {
+			policy[f] = float64(min(defaultCDNTTL, limit))
+		}
+	}
+}
+
+// dropTTLsForbiddenByMode removes, from a merge-patched cdnPolicy, the TTLs the
+// new cacheMode forbids that the patch itself did not send. Switching a stored
+// CACHE_ALL_STATIC policy (which carries defaulted TTLs) to USE_ORIGIN_HEADERS
+// must not be refused over TTLs the caller never chose; a TTL the patch does
+// send is still validated.
+func dropTTLsForbiddenByMode(next, patch map[string]any) {
+	patchPolicy, _ := patch["cdnPolicy"].(map[string]any)
+	if _, changed := patchPolicy[fieldCacheMode]; !changed {
+		return
+	}
+
+	policy, _ := next["cdnPolicy"].(map[string]any)
+	mode, _ := policy[fieldCacheMode].(string)
+
+	for _, f := range cdnTTLsForbiddenBy(mode) {
+		if _, sent := patchPolicy[f]; !sent {
+			delete(policy, f)
+		}
+	}
+}
+
+// cdnTTLsForbiddenBy lists the TTL fields a cacheMode refuses a non-zero value
+// for: USE_ORIGIN_HEADERS takes every TTL from the origin, and FORCE_CACHE_ALL
+// caches for defaultTtl so it has no maxTtl.
+func cdnTTLsForbiddenBy(mode string) []string {
+	switch mode {
+	case cacheModeUseOriginHeaders:
+		return []string{fieldDefaultTTL, fieldMaxTTL, fieldClientTTL}
+	case cacheModeForceCacheAll:
+		return []string{fieldMaxTTL}
+	default:
+		return nil
 	}
 }
 
@@ -133,7 +209,7 @@ func validateCDNPolicy(v any) error {
 	return validateCDNLists(policy)
 }
 
-// validateCDNRanges checks the TTL bounds and that defaultTtl <= maxTtl.
+// validateCDNRanges checks the TTL bounds, then the cross-field TTL rules.
 func validateCDNRanges(policy map[string]any) error {
 	limits := []struct {
 		field string
@@ -141,7 +217,7 @@ func validateCDNRanges(policy map[string]any) error {
 	}{
 		{fieldDefaultTTL, maxCDNTTLSeconds},
 		{fieldMaxTTL, maxCDNTTLSeconds},
-		{"clientTtl", maxCDNTTLSeconds},
+		{fieldClientTTL, maxCDNTTLSeconds},
 		{"serveWhileStale", maxServeWhileStaleSeconds},
 		{"signedUrlCacheMaxAgeSec", math.MaxInt64},
 	}
@@ -159,13 +235,39 @@ func validateCDNRanges(policy map[string]any) error {
 		}
 	}
 
-	defTTL, hasDef := jsonInt(policy[fieldDefaultTTL])
-	maxTTL, hasMax := jsonInt(policy[fieldMaxTTL])
+	return validateCDNModeTTLs(policy)
+}
 
-	if hasDef && hasMax && defTTL > maxTTL {
-		return cerrors.Newf(cerrors.InvalidArgument,
-			"Invalid value for field 'resource.cdnPolicy.defaultTtl': '%d'. defaultTtl cannot be greater than maxTtl (%d).",
-			defTTL, maxTTL)
+// validateCDNModeTTLs applies the cross-field TTL rules: a cacheMode refuses a
+// non-zero TTL it does not use (cdnTTLsForbiddenBy), and under
+// CACHE_ALL_STATIC both defaultTtl and clientTtl are capped by the effective
+// maxTtl — the explicit one, or the 86400 default when it is unset.
+func validateCDNModeTTLs(policy map[string]any) error {
+	mode, _ := policy[fieldCacheMode].(string)
+
+	for _, f := range cdnTTLsForbiddenBy(mode) {
+		if n, ok := jsonInt(policy[f]); ok && n != 0 {
+			return cerrors.Newf(cerrors.InvalidArgument,
+				"Invalid value for field 'resource.cdnPolicy.%s': '%d'. %s cannot be specified with the %s cache mode.",
+				f, n, f, mode)
+		}
+	}
+
+	if mode != cacheModeCacheAllStatic && mode != "" {
+		return nil
+	}
+
+	maxTTL, hasMax := jsonInt(policy[fieldMaxTTL])
+	if !hasMax {
+		maxTTL = defaultCDNMaxTTL
+	}
+
+	for _, f := range []string{fieldDefaultTTL, fieldClientTTL} {
+		if n, ok := jsonInt(policy[f]); ok && n > maxTTL {
+			return cerrors.Newf(cerrors.InvalidArgument,
+				"Invalid value for field 'resource.cdnPolicy.%s': '%d'. %s cannot be greater than maxTtl (%d).",
+				f, n, f, maxTTL)
+		}
 	}
 
 	return nil

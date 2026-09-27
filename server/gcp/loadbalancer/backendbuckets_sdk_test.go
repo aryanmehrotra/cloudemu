@@ -111,7 +111,7 @@ func cdnBucket(name string) *computepb.BackendBucket {
 		CompressionMode:       ptrStr("AUTOMATIC"),
 		CustomResponseHeaders: []string{"X-Cache-Status: {cdn_cache_status}"},
 		CdnPolicy: &computepb.BackendBucketCdnPolicy{
-			CacheMode:               ptrStr("FORCE_CACHE_ALL"),
+			CacheMode:               ptrStr("CACHE_ALL_STATIC"),
 			DefaultTtl:              ptrI32(60),
 			MaxTtl:                  ptrI32(600),
 			ClientTtl:               ptrI32(30),
@@ -189,7 +189,7 @@ func assertInsertedBB(t *testing.T, got *computepb.BackendBucket) {
 	}
 
 	p := got.GetCdnPolicy()
-	if p.GetCacheMode() != "FORCE_CACHE_ALL" || p.GetDefaultTtl() != 60 || p.GetMaxTtl() != 600 ||
+	if p.GetCacheMode() != "CACHE_ALL_STATIC" || p.GetDefaultTtl() != 60 || p.GetMaxTtl() != 600 ||
 		p.GetClientTtl() != 30 || !p.GetNegativeCaching() || p.GetSignedUrlCacheMaxAgeSec() != 7200 ||
 		!p.GetRequestCoalescing() {
 		t.Errorf("cdnPolicy did not round-trip: %v", p)
@@ -208,7 +208,7 @@ func assertPatchedBB(t *testing.T, got *computepb.BackendBucket) {
 	}
 
 	p := got.GetCdnPolicy()
-	if p.GetDefaultTtl() != 120 || p.GetCacheMode() != "FORCE_CACHE_ALL" || p.GetMaxTtl() != 600 {
+	if p.GetDefaultTtl() != 120 || p.GetCacheMode() != "CACHE_ALL_STATIC" || p.GetMaxTtl() != 600 {
 		t.Errorf("cdnPolicy after patch = %v, want defaultTtl=120 with cacheMode/maxTtl kept", p)
 	}
 }

@@ -261,6 +261,7 @@ func nextBackendBucketBody(stored, req map[string]any, merge bool) map[string]an
 	if merge {
 		next := deepCopyMap(stored)
 		mergePatch(next, req)
+		dropTTLsForbiddenByMode(next, req)
 		applyBackendBucketDefaults(next)
 
 		return next
