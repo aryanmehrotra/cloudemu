@@ -9695,6 +9695,44 @@
         ]
       },
       {
+        "name": "GCPServiceAttachmentStore",
+        "doc": "GCPServiceAttachmentStore is an OPTIONAL, type-asserted capability",
+        "operations": [
+          {
+            "name": "ConnectGCPServiceAttachment",
+            "doc": "ConnectGCPServiceAttachment records a consumer endpoint on the attachment"
+          },
+          {
+            "name": "DeleteGCPServiceAttachment",
+            "doc": "DeleteGCPServiceAttachment removes the attachment, or returns NotFound."
+          },
+          {
+            "name": "DisconnectGCPServiceAttachment",
+            "doc": "DisconnectGCPServiceAttachment removes a consumer endpoint (by"
+          },
+          {
+            "name": "GCPPSCConnectionStatus",
+            "doc": "GCPPSCConnectionStatus returns the current status of a consumer"
+          },
+          {
+            "name": "GetGCPServiceAttachment",
+            "doc": "GetGCPServiceAttachment returns the attachment, or NotFound."
+          },
+          {
+            "name": "InsertGCPServiceAttachment",
+            "doc": "InsertGCPServiceAttachment validates and stores a new attachment,"
+          },
+          {
+            "name": "ListGCPServiceAttachments",
+            "doc": "ListGCPServiceAttachments returns every attachment in a region."
+          },
+          {
+            "name": "UpdateGCPServiceAttachment",
+            "doc": "UpdateGCPServiceAttachment applies mutate under the store lock, keeps the"
+          }
+        ]
+      },
+      {
         "name": "LBAttributeUpdater",
         "doc": "LBAttributeUpdater is implemented by drivers that can apply a partial",
         "operations": [

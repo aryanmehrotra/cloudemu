@@ -98,7 +98,7 @@ func (*Handler) Matches(r *http.Request) bool {
 	}
 
 	switch rp.ResourceType {
-	case resourceBackendServices, resourceForwardingRules, resourceBackendBuckets,
+	case resourceBackendServices, resourceForwardingRules, resourceBackendBuckets, resourceServiceAttachments,
 		resourceHealthChecks, resourceTargetPools, resourceURLMaps,
 		resourceTargetHTTPProxies, resourceTargetHTTPSProxies, resourceSslCertificates,
 		resourceInstanceGroups, resourceRegionInstanceGroups:
@@ -123,6 +123,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.routeForwardingRules(w, r, rp)
 	case resourceBackendBuckets:
 		h.routeBackendBuckets(w, r, rp)
+	case resourceServiceAttachments:
+		h.routeServiceAttachments(w, r, rp)
 	case resourceHealthChecks, resourceTargetPools, resourceURLMaps:
 		h.routeGCPResource(w, r, rp)
 	case resourceTargetHTTPProxies, resourceTargetHTTPSProxies, resourceSslCertificates,

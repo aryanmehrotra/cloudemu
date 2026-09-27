@@ -352,6 +352,21 @@ func (h *Handler) insertForwardingRule(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 
+	// A service-attachment consumer rule connects to its attachment, which
+	// decides pscConnectionStatus. If the attachment vanished since validation
+	// the rule is not left behind.
+	if err := h.connectPSCEndpoint(r.Context(), rp, hostOf(r), &req, lb); err != nil {
+		_ = h.lb.DeleteLoadBalancer(r.Context(), lb.ARN)
+
+		if cerrors.IsNotFound(err) {
+			err = invalidRefErr("target", req.Target, "serviceAttachment")
+		}
+
+		gcprest.WriteCErr(w, err)
+
+		return
+	}
+
 	// A forwarding rule that references a backend service becomes a listener
 	// linking the load balancer to that target group. A dangling reference to a
 	// non-existent backend service is an error (as in real GCP), and a failed
@@ -447,6 +462,8 @@ func (h *Handler) deleteForwardingRule(w http.ResponseWriter, r *http.Request, r
 		gcprest.WriteCErr(w, err)
 		return
 	}
+
+	h.disconnectPSCEndpoint(r.Context(), lb)
 
 	op := h.ops.RecordDone(hostOf(r), rp.Project, rp.Scope, rp.ScopeName,
 		resourceForwardingRules, rp.ResourceName, "delete")
@@ -691,7 +708,7 @@ func (h *Handler) toForwardingRuleResponse(ctx context.Context, lb *lbdriver.LBI
 		SelfLink:            gcprest.SelfLink(host, rp.Project, rp.Scope, rp.ScopeName, resourceForwardingRules, name),
 	}
 
-	applyPSCFields(&out, lb)
+	h.applyPSCFields(ctx, &out, lb)
 
 	// A linked listener (a rule referencing a backend service) supersedes the
 	// round-tripped protocol/portRange and adds the backendService self-link.

@@ -65,12 +65,15 @@ func assertPSCRule(t *testing.T, got *computepb.ForwardingRule, wantIP, wantTarg
 
 // TestSDKGCPForwardingRulePSCServiceAttachment drives a regional Private
 // Service Connect consumer rule (target = a producer's serviceAttachments
-// self-link) through the real ForwardingRulesRESTClient. The attachment lives
-// in another project the emulator does not model, so it must not be rejected.
+// self-link) through the real ForwardingRulesRESTClient. The producer
+// attachment must exist (GCP refuses an endpoint for one it cannot find); it
+// accepts automatically, so the connection is ACCEPTED.
 func TestSDKGCPForwardingRulePSCServiceAttachment(t *testing.T) {
 	ts := newGCPLBServer(t)
 	ctx := context.Background()
 	client := newRegionalForwardingRulesClient(t, ts.URL, option.WithHTTPClient(ts.Client()))
+
+	insertAttachment(ctx, t, ts, attachment("producer-sa", "ACCEPT_AUTOMATIC"))
 
 	op, err := client.Insert(ctx, &computepb.InsertForwardingRuleRequest{
 		Project: testProject,

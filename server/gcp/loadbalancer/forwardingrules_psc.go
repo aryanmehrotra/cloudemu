@@ -1,6 +1,7 @@
 package loadbalancer
 
 import (
+	"context"
 	"strconv"
 	"strings"
 
@@ -23,9 +24,10 @@ const (
 
 	pscServiceAttachmentsSegment = "/serviceAttachments/"
 
-	// pscStatusAccepted is the connection status of a PSC rule the emulator
-	// created: there is no producer-side acceptance list to reject it.
-	pscStatusAccepted = "ACCEPTED"
+	// pscStatusAccepted is the connection status of a Google APIs bundle
+	// endpoint: there is no producer to decide it. A service-attachment
+	// endpoint's status comes from the attachment (GCPServiceAttachmentStore).
+	pscStatusAccepted = lbdriver.PSCStatusAccepted
 )
 
 // isGoogleAPIsBundle reports whether target names a PSC Google APIs bundle.
@@ -89,15 +91,68 @@ func pscInternalIP(lb *lbdriver.LBInfo) string {
 	return "10." + strconv.Itoa(int(o2)) + "." + strconv.Itoa(int(o3)) + "." + strconv.Itoa(int(o4))
 }
 
+// pscConnectionID is the stable pscConnectionId of a PSC consumer rule.
+func pscConnectionID(lb *lbdriver.LBInfo) string {
+	return strconv.FormatUint(positiveID(fnvHash("psc:"+lb.ID)), 10)
+}
+
 // applyPSCFields sets pscConnectionStatus and a stable pscConnectionId on a
-// PSC consumer rule's response; other rules are left untouched.
-func applyPSCFields(out *forwardingRuleResponse, lb *lbdriver.LBInfo) {
-	if !isPSCTarget(lb.Tags[frTargetTag]) {
+// PSC consumer rule's response; other rules are left untouched. A Google APIs
+// bundle endpoint is always ACCEPTED; a service-attachment endpoint reports
+// the status the attachment gave it (CLOSED once the attachment is gone).
+func (h *Handler) applyPSCFields(ctx context.Context, out *forwardingRuleResponse, lb *lbdriver.LBInfo) {
+	target := lb.Tags[frTargetTag]
+	if !isPSCTarget(target) {
 		return
 	}
 
-	id := positiveID(fnvHash("psc:" + lb.ID))
-
+	out.PscConnectionID = pscConnectionID(lb)
 	out.PscConnectionStatus = pscStatusAccepted
-	out.PscConnectionID = strconv.FormatUint(id, 10)
+
+	store, ok := h.serviceAttachmentStore()
+	if !ok {
+		return
+	}
+
+	if region, name, parsed := attachmentRef(target); parsed {
+		out.PscConnectionStatus = store.GCPPSCConnectionStatus(ctx, region, name, out.PscConnectionID)
+	}
+}
+
+// connectPSCEndpoint records a newly created service-attachment consumer rule
+// on its attachment, which decides the connection's status.
+//
+//nolint:gocritic // rp is a request-scoped value
+func (h *Handler) connectPSCEndpoint(ctx context.Context, rp gcprest.ResourcePath, host string,
+	req *forwardingRuleRequest, lb *lbdriver.LBInfo,
+) error {
+	store, ok := h.serviceAttachmentStore()
+	if !ok {
+		return nil
+	}
+
+	region, name, parsed := attachmentRef(req.Target)
+	if !parsed {
+		return nil
+	}
+
+	_, err := store.ConnectGCPServiceAttachment(ctx, region, name, lbdriver.GCPPSCEndpoint{
+		Endpoint:        gcprest.SelfLink(host, rp.Project, rp.Scope, rp.ScopeName, resourceForwardingRules, req.Name),
+		PscConnectionID: pscConnectionID(lb),
+		ConsumerNetwork: req.Network,
+	})
+
+	return err
+}
+
+// disconnectPSCEndpoint removes a deleted consumer rule from its attachment.
+func (h *Handler) disconnectPSCEndpoint(ctx context.Context, lb *lbdriver.LBInfo) {
+	store, ok := h.serviceAttachmentStore()
+	if !ok {
+		return
+	}
+
+	if region, name, parsed := attachmentRef(lb.Tags[frTargetTag]); parsed {
+		_ = store.DisconnectGCPServiceAttachment(ctx, region, name, pscConnectionID(lb))
+	}
 }

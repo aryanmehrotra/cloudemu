@@ -32,6 +32,7 @@ var resourceKind = map[string]string{
 	resourceTargetPools:          "compute#targetPool",
 	resourceURLMaps:              "compute#urlMap",
 	resourceBackendBuckets:       "compute#backendBucket",
+	resourceServiceAttachments:   "compute#serviceAttachment",
 	resourceTargetHTTPProxies:    "compute#targetHttpProxy",
 	resourceTargetHTTPSProxies:   "compute#targetHttpsProxy",
 	resourceSslCertificates:      "compute#sslCertificate",

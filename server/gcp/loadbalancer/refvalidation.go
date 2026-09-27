@@ -263,6 +263,10 @@ func (h *Handler) validateForwardingRuleTarget(ctx context.Context, rp gcprest.R
 		return err
 	}
 
+	if err := h.validateAttachmentTarget(ctx, rp, target); err != nil {
+		return err
+	}
+
 	collection := targetCollectionFor(target)
 	if collection == "" {
 		return nil
