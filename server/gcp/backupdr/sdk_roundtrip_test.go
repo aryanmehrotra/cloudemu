@@ -18,6 +18,7 @@ import (
 	"github.com/stackshy/cloudemu/v2/config"
 	gcpprovider "github.com/stackshy/cloudemu/v2/providers/gcp"
 	gcpserver "github.com/stackshy/cloudemu/v2/server/gcp"
+	bdrdriver "github.com/stackshy/cloudemu/v2/services/backupdr/driver"
 )
 
 const (
@@ -295,9 +296,14 @@ func TestSDKBackupVaultValidateOnly(t *testing.T) {
 		t.Fatalf("validateOnly create: %v", err)
 	}
 
-	e.wait(t, op)
+	// validateOnly mutates nothing, so it mints no pollable operation: the
+	// reply is done with the would-be vault inline and no name.
+	if !op.Done || op.Name != "" || len(op.Response) == 0 {
+		t.Fatalf("validateOnly create op = %+v, want done, unnamed, with a response", op)
+	}
 
 	_, err = vaults.Get(e.parent + "/backupVaults/dry-run").Do()
+
 	wantCode(t, "get after validateOnly create", err, http.StatusNotFound)
 
 	_, err = vaults.Create(e.parent, &backupdr.BackupVault{}).BackupVaultId("dry-run").ValidateOnly(true).Do()
@@ -313,9 +319,7 @@ func TestSDKBackupVaultDeleteGuards(t *testing.T) {
 
 	e.create(t, "vault-full", &backupdr.BackupVault{BackupMinimumEnforcedRetentionDuration: retention})
 
-	if err := e.cloud.BackupDR.SetUsage(sdkProject, sdkLocation, "vault-full", 2, 4096); err != nil {
-		t.Fatalf("SetUsage: %v", err)
-	}
+	e.seedUsage(t, "vault-full", 2, 4096)
 
 	full := e.get(t, name)
 	if full.Deletable || full.BackupCount != 2 || full.TotalStoredBytes != 4096 {
@@ -344,4 +348,51 @@ func TestSDKBackupVaultDeleteGuards(t *testing.T) {
 	}
 
 	e.wait(t, op)
+}
+
+// seedUsage makes a vault non-empty through the provider's snapshot/restore
+// seam (the emulator has no data plane that could create backups): it
+// snapshots the Backup and DR state, sets the vault's backupCount and
+// totalStoredBytes, and restores it.
+func (e *sdkEnv) seedUsage(t *testing.T, id string, backupCount, totalStoredBytes int64) {
+	t.Helper()
+
+	ctx := context.Background()
+
+	raw, err := e.cloud.BackupDR.Snapshot(ctx, false)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+
+	var snap map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &snap); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+
+	var vaults map[string]bdrdriver.BackupVault
+	if err := json.Unmarshal(snap["backupVaults"], &vaults); err != nil {
+		t.Fatalf("decode snapshot vaults: %v", err)
+	}
+
+	key := e.parent + "/backupVaults/" + id
+
+	v, ok := vaults[key]
+	if !ok {
+		t.Fatalf("seedUsage: vault %s not in snapshot", key)
+	}
+
+	v.BackupCount, v.TotalStoredBytes = backupCount, totalStoredBytes
+	vaults[key] = v
+
+	if snap["backupVaults"], err = json.Marshal(vaults); err != nil {
+		t.Fatalf("encode vaults: %v", err)
+	}
+
+	if raw, err = json.Marshal(snap); err != nil {
+		t.Fatalf("encode snapshot: %v", err)
+	}
+
+	if err := e.cloud.BackupDR.Restore(ctx, raw); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
 }

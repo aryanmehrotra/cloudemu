@@ -72,20 +72,40 @@ func (h *Handler) getVault(w http.ResponseWriter, r *http.Request, rt route) {
 }
 
 // listVaults handles GET .../backupVaults, scoped to the request's project and
-// location ("-" for every location) and ordered by resource name. filter and
-// orderBy are accepted and ignored.
+// location ("-" for every location). filter supports the AIP-160 equality
+// subset parseFilter documents and orderBy the fields parseOrderBy documents
+// (default: resource name ascending); an unsupported expression in either is
+// 400 INVALID_ARGUMENT rather than being ignored.
 func (h *Handler) listVaults(w http.ResponseWriter, r *http.Request, rt route) {
+	q := r.URL.Query()
+
+	clauses, err := parseFilter(q.Get("filter"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+
+	field, desc, err := parseOrderBy(q.Get("orderBy"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+
 	all, err := h.db.ListBackupVaults(r.Context(), rt.project, rt.location)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
 
-	page, err := pagination.PaginateSorted(all,
-		func(a, b bdrdriver.BackupVault) bool {
-			return resourceName(a.Project, a.Location, a.ID) < resourceName(b.Project, b.Location, b.ID)
-		},
-		r.URL.Query().Get("pageToken"), pageSize(r))
+	matched := make([]bdrdriver.BackupVault, 0, len(all))
+
+	for i := range all {
+		if matchesAll(&all[i], clauses) {
+			matched = append(matched, all[i])
+		}
+	}
+
+	page, err := pagination.PaginateSorted(matched, vaultLess(field, desc), q.Get("pageToken"), pageSize(r))
 	if err != nil {
 		gcprest.WriteError(w, http.StatusBadRequest, "invalid", "invalid pageToken")
 		return
@@ -131,7 +151,8 @@ func (h *Handler) patchVault(w http.ResponseWriter, r *http.Request, rt route) {
 // deleteVault handles DELETE .../backupVaults/{id}. force, allowMissing, etag
 // and validateOnly are honored; ignoreBackupPlanReferences and requestId are
 // accepted and ignored (there are no backup plans). The operation completes
-// inline with an empty response.
+// inline with a google.protobuf.Empty response, which the GAPIC client's
+// DeleteBackupVaultOperation.Wait requires.
 func (h *Handler) deleteVault(w http.ResponseWriter, r *http.Request, rt route) {
 	req := &bdrdriver.DeleteBackupVaultRequest{
 		Project: rt.project, Location: rt.location, ID: rt.name,
@@ -162,12 +183,16 @@ func (h *Handler) deleteVault(w http.ResponseWriter, r *http.Request, rt route) 
 		return
 	}
 
-	gcprest.WriteJSON(w, http.StatusOK, h.doneOperation(op.Name, nil))
+	h.writeEmptyOperation(w, op)
 }
 
 // serveOperation resolves a (done) long-running operation poll for a
 // standalone package server (no shared registry). The operation resource name
-// is the request path without the /v1/ version prefix.
+// is the request path without the /v1/ version prefix. The replayed operation
+// carries the same `response` the mutating call returned: the target vault for
+// a create or update (its current state, while it still exists) and
+// google.protobuf.Empty otherwise, so a GAPIC Wait on a rebuilt operation
+// handle decodes it.
 func (h *Handler) serveOperation(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w)
@@ -182,7 +207,35 @@ func (h *Handler) serveOperation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	gcprest.WriteJSON(w, http.StatusOK, operationJSON{Name: op.Name, Done: true})
+	if v := h.operationVault(r, op); v != nil {
+		h.writeVaultOperation(w, op, v)
+		return
+	}
+
+	h.writeEmptyOperation(w, op)
+}
+
+// operationVault returns the vault a create or update operation acted on, or
+// nil for a delete, an unknown operation, or a vault that no longer exists.
+func (h *Handler) operationVault(r *http.Request, op *bdrdriver.Operation) *bdrdriver.BackupVault {
+	if op.Type == "delete" || op.TargetName == "" {
+		return nil
+	}
+
+	// projects/{p}/locations/{l}/backupVaults/{id}
+	const targetParts, collIdx, idIdx = 6, 4, 5
+
+	parts := strings.Split(op.TargetName, "/")
+	if len(parts) != targetParts || parts[collIdx] != vaultsColl {
+		return nil
+	}
+
+	v, err := h.db.GetBackupVault(r.Context(), parts[1], parts[3], parts[idIdx])
+	if err != nil {
+		return nil
+	}
+
+	return v
 }
 
 // boolParam reads an optional boolean query parameter; a malformed value is a

@@ -13,8 +13,10 @@
 //
 // There is no data plane: no data sources, backups, backup plans, management
 // servers or restores. A vault therefore always reports backupCount and
-// totalStoredBytes of 0 and deletable=true, unless a test seeds usage through
-// the provider mock's SetUsage hook to exercise the non-empty delete guard.
+// totalStoredBytes of 0 and deletable=true, unless restored from a snapshot
+// that carries usage (the provider's tests seed it through a test-only hook to
+// exercise the non-empty delete guard).
+
 package driver
 
 import (

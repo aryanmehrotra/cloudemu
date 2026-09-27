@@ -6,12 +6,23 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	cerrors "github.com/stackshy/cloudemu/v2/errors"
 	"github.com/stackshy/cloudemu/v2/server/wire/gcprest"
 	bdrdriver "github.com/stackshy/cloudemu/v2/services/backupdr/driver"
 )
+
+// emptyTypeURL is the Any type of a delete operation's response. The GAPIC
+// client's DeleteBackupVaultOperation.Wait fails on a done operation with no
+// response ("unsupported result type <nil>"), so every delete replays it.
+const emptyTypeURL = "type.googleapis.com/google.protobuf.Empty"
+
+// emptyResponse is google.protobuf.Empty wrapped as an Any.
+//
+//nolint:gochecknoglobals // immutable wire constant
+var emptyResponse = json.RawMessage(`{"@type":"` + emptyTypeURL + `"}`)
 
 // maxBodyBytes caps a decoded request body.
 const maxBodyBytes = 8 << 20
@@ -101,10 +112,11 @@ type listJSON struct {
 }
 
 // operationJSON mirrors google.longrunning.Operation. Mutating ops complete
-// inline, so `done` is always true; `response` carries the resulting vault (an
-// Any for create/patch, absent for delete).
+// inline, so `done` is always true; `response` carries the result as an Any:
+// the vault for create/patch, google.protobuf.Empty for delete. A validateOnly
+// request mints no operation, so its name is empty.
 type operationJSON struct {
-	Name     string          `json:"name"`
+	Name     string          `json:"name,omitempty"`
 	Done     bool            `json:"done"`
 	Response json.RawMessage `json:"response,omitempty"`
 }
@@ -170,35 +182,41 @@ func (h *Handler) writeVaultOperation(w http.ResponseWriter, op *bdrdriver.Opera
 	gcprest.WriteJSON(w, http.StatusOK, h.doneOperation(op.Name, raw))
 }
 
+// writeEmptyOperation writes a completed operation whose response is
+// google.protobuf.Empty (delete, and polls with no vault to return).
+func (h *Handler) writeEmptyOperation(w http.ResponseWriter, op *bdrdriver.Operation) {
+	gcprest.WriteJSON(w, http.StatusOK, h.doneOperation(op.Name, emptyResponse))
+}
+
 // doneOperation builds a completed google.longrunning.Operation and records it
 // with the shared LRO poller (a no-op on a nil registry) so a client polling
-// the returned name resolves the same done operation (with its response).
+// the returned name resolves the same done operation with the same response.
+// A validateOnly operation has no name and is not registered: nothing was
+// mutated, so there is nothing to poll.
 func (h *Handler) doneOperation(name string, resp json.RawMessage) operationJSON {
-	if h.ops != nil {
-		// A nil RawMessage stored in the registry's `any` would be a non-nil
-		// interface and replay as "response": null; register a true nil instead.
-		if resp == nil {
-			h.ops.Register(name, nil)
-		} else {
-			h.ops.Register(name, resp)
-		}
+	if h.ops != nil && name != "" {
+		h.ops.Register(name, resp)
 	}
 
 	return operationJSON{Name: name, Done: true, Response: resp}
 }
 
-// writeErr maps a driver error onto the Google JSON error envelope. A stale
-// etag is 409 ABORTED; a vault that still holds backups is FAILED_PRECONDITION,
-// which the Google REST mapping renders as HTTP 400; everything else follows
-// the shared cerrors mapping.
+// writeErr maps a driver error onto the Google JSON error envelope, using the
+// camelCase errors[].reason tokens every other GCP handler emits (the
+// top-level status carries the canonical code). A stale etag is 409 ABORTED,
+// with the vault name kept in the message; any other FAILED_PRECONDITION (a
+// non-empty vault, a locked retention) is HTTP 400, the Google REST mapping of
+// that code; everything else follows the shared cerrors mapping.
 func writeErr(w http.ResponseWriter, err error) {
-	msg := cerrors.Message(err)
-
 	switch {
 	case errors.Is(err, bdrdriver.ErrEtagMismatch):
-		gcprest.WriteError(w, http.StatusConflict, "ABORTED", msg)
+		// The provider wraps the sentinel as `backup vault "<name>": <sentinel>`;
+		// cerrors.Message would return only the sentinel's text and drop the
+		// name, so swap just the sentinel's code-prefixed text for its message.
+		msg := strings.Replace(err.Error(), bdrdriver.ErrEtagMismatch.Error(), bdrdriver.ErrEtagMismatch.Message, 1)
+		gcprest.WriteError(w, http.StatusConflict, "aborted", msg)
 	case cerrors.IsFailedPrecondition(err):
-		gcprest.WriteError(w, http.StatusBadRequest, "FAILED_PRECONDITION", msg)
+		gcprest.WriteError(w, http.StatusBadRequest, "failedPrecondition", cerrors.Message(err))
 	default:
 		gcprest.WriteCErr(w, err)
 	}

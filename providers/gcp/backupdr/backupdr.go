@@ -2,7 +2,8 @@
 // control plane (backupdr.googleapis.com/v1). It models backup vaults and the
 // long-running operations their mutating RPCs return. It is control-plane only:
 // there are no data sources, backups, backup plans or restores, so every vault
-// is empty unless a test seeds usage through SetUsage.
+// is empty (backupCount 0) unless its state is restored from a snapshot that
+// says otherwise.
 package backupdr
 
 import (
@@ -60,7 +61,15 @@ func resourceName(project, location, id string) string {
 
 // newOp records a completed operation scoped to the project+location it acted in
 // and returns it. The caller holds the write lock.
-func (m *Mock) newOp(project, location, opType, target string) *bdrdriver.Operation {
+//
+// A validateOnly request performs no mutation, so it mints no operation id and
+// records nothing: it returns a done operation with an empty name, which an LRO
+// client resolves from the inline response without polling.
+func (m *Mock) newOp(project, location, opType, target string, validateOnly bool) *bdrdriver.Operation {
+	if validateOnly {
+		return &bdrdriver.Operation{Done: true, TargetName: target, Type: opType}
+	}
+
 	scope := "projects/" + project + "/locations/" + location
 	op := bdrdriver.Operation{
 		Name:       fmt.Sprintf("%s/operations/operation-%d-%s", scope, m.opSeq.Add(1), idgen.UUID()),
@@ -117,7 +126,7 @@ func (m *Mock) CreateBackupVault(_ context.Context, cfg *bdrdriver.BackupVaultCo
 		m.vaults.Set(key, v)
 	}
 
-	op := m.newOp(cfg.Project, cfg.Location, opCreate, key)
+	op := m.newOp(cfg.Project, cfg.Location, opCreate, key, cfg.ValidateOnly)
 	out := cloneVault(&v)
 
 	return &out, op, nil
@@ -184,19 +193,21 @@ func (m *Mock) UpdateBackupVault(_ context.Context, cfg *bdrdriver.BackupVaultCo
 		return nil, nil, fmt.Errorf("backup vault %q: %w", key, bdrdriver.ErrEtagMismatch)
 	}
 
-	if err := applyMask(&v, cfg, fields); err != nil {
+	now := m.opts.Clock.Now().UTC()
+
+	if err := applyMask(&v, cfg, fields, now); err != nil {
 		return nil, nil, err
 	}
 
 	v.Revision++
-	v.UpdateTime = m.opts.Clock.Now().UTC()
+	v.UpdateTime = now
 	v.Etag = etagFor(&v)
 
 	if !cfg.ValidateOnly {
 		m.vaults.Set(key, v)
 	}
 
-	op := m.newOp(cfg.Project, cfg.Location, opUpdate, key)
+	op := m.newOp(cfg.Project, cfg.Location, opUpdate, key, cfg.ValidateOnly)
 	out := cloneVault(&v)
 
 	return &out, op, nil
@@ -216,7 +227,7 @@ func (m *Mock) DeleteBackupVault(_ context.Context, req *bdrdriver.DeleteBackupV
 	v, ok := m.vaults.Get(key)
 	if !ok {
 		if req.AllowMissing {
-			return m.newOp(req.Project, req.Location, opDelete, key), nil
+			return m.newOp(req.Project, req.Location, opDelete, key, req.ValidateOnly), nil
 		}
 
 		return nil, notFoundErr(req.Project, req.Location, req.ID)
@@ -235,7 +246,7 @@ func (m *Mock) DeleteBackupVault(_ context.Context, req *bdrdriver.DeleteBackupV
 		m.vaults.Delete(key)
 	}
 
-	return m.newOp(req.Project, req.Location, opDelete, key), nil
+	return m.newOp(req.Project, req.Location, opDelete, key, req.ValidateOnly), nil
 }
 
 // GetOperation returns a (done) long-running operation by name. An unknown name
@@ -253,28 +264,6 @@ func (m *Mock) GetOperation(_ context.Context, name string) (*bdrdriver.Operatio
 	out := op
 
 	return &out, nil
-}
-
-// SetUsage seeds a vault's output-only backupCount and totalStoredBytes. The
-// emulator has no data plane, so this is the only way a vault becomes
-// non-empty (deletable=false); tests use it to exercise the force-delete guard.
-// It is deliberately not part of the driver interface.
-func (m *Mock) SetUsage(project, location, id string, backupCount, totalStoredBytes int64) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	key := resourceName(project, location, id)
-
-	v, ok := m.vaults.Get(key)
-	if !ok {
-		return notFoundErr(project, location, id)
-	}
-
-	v.BackupCount = backupCount
-	v.TotalStoredBytes = totalStoredBytes
-	m.vaults.Set(key, v)
-
-	return nil
 }
 
 // notFoundErr builds the NOT_FOUND error carrying the full resource name.

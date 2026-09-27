@@ -23,6 +23,16 @@
 // is wired, letting that poller win; a standalone package server (no registry)
 // serves its own polls. The backupVaults resource-type guard keeps this handler
 // disjoint from every other /v1/projects/ handler.
+//
+// Known gap (not implemented): backupPlans, backupPlanAssociations,
+// dataSources, backups and managementServers. This handler does not claim
+// those paths, so a vault is never protected by a backup-plan reference
+// (ignoreBackupPlanReferences on delete has nothing to check). Note that
+// /v1/projects/{p}/locations/{l}/backupPlans requests are currently answered
+// by the GKE Backup handler (server/gcp/gkebackup), which shares that path
+// shape and replies with a google.cloud.gkebackup.v1.BackupPlan; a Backup and
+// DR backup plan (e.g. Terraform google_backup_dr_backup_plan) therefore lands
+// in GKE Backup state rather than being rejected.
 package backupdr
 
 import (

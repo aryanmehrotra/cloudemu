@@ -17,10 +17,12 @@ const (
 	accessWithinOrganization = "WITHIN_ORGANIZATION"
 	accessUnspecified        = "ACCESS_RESTRICTION_UNSPECIFIED"
 
-	// minVaultIDLen / maxVaultIDLen bound a vault id, per the BackupVault.name
-	// contract ("must be between 3-63 characters long").
-	minVaultIDLen = 3
-	maxVaultIDLen = 63
+	// minRetention / maxRetention bound backupMinimumEnforcedRetentionDuration:
+	// "The minimum is 1 day and the maximum is 99 years" (Backup and DR "Create
+	// a backup vault"). 99 years is taken as 99 x 365.25 days so no calendar
+	// reading of "99 years" is rejected.
+	minRetention = 24 * time.Hour
+	maxRetention = 36159*24*time.Hour + 18*time.Hour
 
 	// serviceAccountDomain is the Backup and DR service-agent domain. CloudEmu
 	// synthesizes the vault serviceAccount as
@@ -49,6 +51,12 @@ const (
 	hexBase     = 16
 	decimalBase = 10
 )
+
+// vaultIDPattern is the documented backup vault name rule: only lowercase
+// letters, digits and hyphens, starting and ending with a letter or digit, 3-63
+// characters (Backup and DR "Backup vaults", name requirements). It also keeps
+// '/' out of an id, which would otherwise mint an unreachable resource name.
+var vaultIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$`)
 
 // durationPattern matches the google.protobuf.Duration JSON form: an optionally
 // signed decimal number of seconds with up to nine fractional digits and an "s"
@@ -100,9 +108,10 @@ func validateCreate(cfg *bdrdriver.BackupVaultConfig) error {
 		return cerrors.New(cerrors.InvalidArgument, "a concrete location is required")
 	}
 
-	if n := len(cfg.ID); n < minVaultIDLen || n > maxVaultIDLen {
+	if !vaultIDPattern.MatchString(cfg.ID) {
 		return cerrors.Newf(cerrors.InvalidArgument,
-			"backupVaultId %q must be between %d and %d characters", cfg.ID, minVaultIDLen, maxVaultIDLen)
+			"backupVaultId %q must be 3-63 characters of lowercase letters, digits and hyphens, "+
+				"starting and ending with a letter or digit", cfg.ID)
 	}
 
 	checks := []func(*bdrdriver.BackupVaultConfig) error{
@@ -119,23 +128,91 @@ func validateCreate(cfg *bdrdriver.BackupVaultConfig) error {
 }
 
 // checkRetention requires backupMinimumEnforcedRetentionDuration to be a
-// well-formed, non-negative google.protobuf.Duration string.
+// well-formed google.protobuf.Duration string between 1 day and 99 years.
 func checkRetention(cfg *bdrdriver.BackupVaultConfig) error {
 	d := cfg.BackupMinimumEnforcedRetentionDuration
 	if d == "" {
 		return cerrors.New(cerrors.InvalidArgument, "backupMinimumEnforcedRetentionDuration is required")
 	}
 
-	m := durationPattern.FindStringSubmatch(d)
-	if m == nil {
+	got, err := parseRetention(d)
+	if err != nil {
+		return err
+	}
+
+	if got < minRetention || got > maxRetention {
 		return cerrors.Newf(cerrors.InvalidArgument,
+			"backupMinimumEnforcedRetentionDuration %q must be between 1 day (86400s) and 99 years", d)
+	}
+
+	return nil
+}
+
+// parseRetention parses a google.protobuf.Duration JSON string ("86400s").
+func parseRetention(d string) (time.Duration, error) {
+	if !durationPattern.MatchString(d) {
+		return 0, cerrors.Newf(cerrors.InvalidArgument,
 			"backupMinimumEnforcedRetentionDuration %q is not a valid duration (want e.g. \"86400s\")", d)
 	}
 
-	if m[1] != "" {
-		if secs, err := strconv.ParseFloat(strings.TrimSuffix(d, "s"), 64); err != nil || secs != 0 {
-			return cerrors.Newf(cerrors.InvalidArgument, "backupMinimumEnforcedRetentionDuration %q must not be negative", d)
-		}
+	got, err := time.ParseDuration(d)
+	if err != nil {
+		return 0, cerrors.Newf(cerrors.InvalidArgument,
+			"backupMinimumEnforcedRetentionDuration %q is out of range", d)
+	}
+
+	return got, nil
+}
+
+// lockedAt reports whether a vault's retention lock is in effect at now: an
+// effectiveTime is set and has been reached. The stored value was validated as
+// RFC 3339 on write.
+func lockedAt(v *bdrdriver.BackupVault, now time.Time) bool {
+	if v.EffectiveTime == "" {
+		return false
+	}
+
+	t, err := time.Parse(time.RFC3339Nano, v.EffectiveTime)
+
+	return err == nil && !now.Before(t)
+}
+
+// checkLock enforces the retention lock on a masked update. Before the
+// effective time a vault's retention and lock time may change freely; once it
+// has passed, "no one (not even a Project Owner) can decrease the retention
+// period. You are only permitted to increase it", and the lock "cannot be
+// removed if the effective date has been reached", so effectiveTime is frozen.
+// Both rejections are FAILED_PRECONDITION: the request is well-formed, the
+// vault's state forbids it.
+func checkLock(v *bdrdriver.BackupVault, cfg *bdrdriver.BackupVaultConfig, fields map[string]bool, now time.Time) error {
+	if !lockedAt(v, now) {
+		return nil
+	}
+
+	name := resourceName(v.Project, v.Location, v.ID)
+
+	if fields[fieldEffectiveTime] && cfg.EffectiveTime != v.EffectiveTime {
+		return cerrors.Newf(cerrors.FailedPrecondition,
+			"backup vault %q is locked since %s; effectiveTime cannot be changed", name, v.EffectiveTime)
+	}
+
+	if !fields[fieldRetention] {
+		return nil
+	}
+
+	// A stored value that does not parse (never written by this mock) compares
+	// as zero, so any valid new value is an increase.
+	cur, _ := parseRetention(v.BackupMinimumEnforcedRetentionDuration)
+
+	next, err := parseRetention(cfg.BackupMinimumEnforcedRetentionDuration)
+	if err != nil {
+		return err
+	}
+
+	if next < cur {
+		return cerrors.Newf(cerrors.FailedPrecondition,
+			"backup vault %q is locked since %s; backupMinimumEnforcedRetentionDuration can only be increased (currently %s)",
+			name, v.EffectiveTime, v.BackupMinimumEnforcedRetentionDuration)
 	}
 
 	return nil
@@ -208,9 +285,9 @@ func normalizeMask(mask []string) (map[string]bool, error) {
 	return out, nil
 }
 
-// applyMask copies each masked field from cfg onto v, validating the new value.
-// Fields outside the mask are left untouched.
-func applyMask(v *bdrdriver.BackupVault, cfg *bdrdriver.BackupVaultConfig, fields map[string]bool) error {
+// applyMask copies each masked field from cfg onto v, validating the new value
+// and the retention lock as of now. Fields outside the mask are left untouched.
+func applyMask(v *bdrdriver.BackupVault, cfg *bdrdriver.BackupVaultConfig, fields map[string]bool, now time.Time) error {
 	checks := map[string]func(*bdrdriver.BackupVaultConfig) error{
 		fieldRetention:     checkRetention,
 		fieldInheritance:   checkInheritance,
@@ -226,7 +303,12 @@ func applyMask(v *bdrdriver.BackupVault, cfg *bdrdriver.BackupVaultConfig, field
 		}
 	}
 
+	if err := checkLock(v, cfg, fields, now); err != nil {
+		return err
+	}
+
 	setters := map[string]func(){
+
 		fieldDescription:   func() { v.Description = cfg.Description },
 		fieldLabels:        func() { v.Labels = cloneStrMap(cfg.Labels) },
 		fieldAnnotations:   func() { v.Annotations = cloneStrMap(cfg.Annotations) },
