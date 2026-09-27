@@ -3112,6 +3112,9 @@
     "interface": "provider-native",
     "operations": [
       {
+        "name": "ContinueUpdateRollback"
+      },
+      {
         "name": "CreateStack"
       },
       {
