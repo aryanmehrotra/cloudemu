@@ -1,8 +1,9 @@
 // Package logic provides an in-memory mock of Azure Logic Apps (Consumption)
 // workflows (Microsoft.Logic/workflows), the ARM control plane only. It manages
 // the workflow resource lifecycle (create/update/get/delete/list) and the
-// enable/disable state toggle; running a workflow (triggers, runs, actions,
-// callback URLs) is data plane and out of scope.
+// enable/disable state toggle, and mints a trigger's callback URL
+// (listCallbackUrl). Triggers, runs, versions and executing a workflow are out
+// of scope; see docs/coverage/nongoals/logic.md.
 //
 // The workflow definition, parameters, access-control and integration-account
 // blocks are stored as opaque JSON and echoed verbatim: the emulator never
@@ -20,6 +21,7 @@
 package logic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -56,6 +58,10 @@ const (
 	// versionWidth is the zero-padded digit count of a workflow version string;
 	// real versions are 20-digit numeric tokens.
 	versionWidth = 20
+	// maxNameLen is the longest workflow name Azure accepts.
+	maxNameLen = 43
+	// jsonNull is the JSON null literal, treated as an absent opaque value.
+	jsonNull = "null"
 )
 
 // Workflow states a caller may set. Real Azure additionally reports Completed,
@@ -98,11 +104,15 @@ type Workflow struct {
 	Parameters         json.RawMessage   `json:"parameters,omitempty"`
 	AccessControl      json.RawMessage   `json:"accessControl,omitempty"`
 	IntegrationAccount json.RawMessage   `json:"integrationAccount,omitempty"`
-	AccessEndpoint     string            `json:"accessEndpoint"`
-	ProvisioningState  string            `json:"provisioningState"`
-	Revision           uint64            `json:"revision"`
-	CreatedTime        time.Time         `json:"createdTime"`
-	ChangedTime        time.Time         `json:"changedTime"`
+	// IntegrationServiceEnvironment and Sku are opaque resource references
+	// ({"id":...} / {"name":...,"plan":{...}}) echoed verbatim.
+	IntegrationServiceEnvironment json.RawMessage `json:"integrationServiceEnvironment,omitempty"`
+	Sku                           json.RawMessage `json:"sku,omitempty"`
+	AccessEndpoint                string          `json:"accessEndpoint"`
+	ProvisioningState             string          `json:"provisioningState"`
+	Revision                      uint64          `json:"revision"`
+	CreatedTime                   time.Time       `json:"createdTime"`
+	ChangedTime                   time.Time       `json:"changedTime"`
 }
 
 // ARMID returns the fully-qualified ARM resource id, with the canonical
@@ -128,6 +138,26 @@ type Input struct {
 	Parameters         json.RawMessage
 	AccessControl      json.RawMessage
 	IntegrationAccount json.RawMessage
+
+	IntegrationServiceEnvironment json.RawMessage
+	Sku                           json.RawMessage
+}
+
+// Patch carries a PATCH (merge) request. A nil field keeps the stored value; a
+// non-nil Tags map (empty included) replaces the tags, and a non-nil Identity
+// replaces the identity (Type "None" detaches it). Location is immutable and so
+// not patchable.
+type Patch struct {
+	Tags               map[string]string
+	Identity           *Identity
+	State              string
+	Definition         json.RawMessage
+	Parameters         json.RawMessage
+	AccessControl      json.RawMessage
+	IntegrationAccount json.RawMessage
+
+	IntegrationServiceEnvironment json.RawMessage
+	Sku                           json.RawMessage
 }
 
 // Mock is the in-memory backend for Logic Apps workflows.
@@ -202,12 +232,75 @@ func (m *Mock) CreateOrUpdate(_ context.Context, sub, rg, name string, in *Input
 	wf.Parameters = cloneRaw(in.Parameters)
 	wf.AccessControl = cloneRaw(in.AccessControl)
 	wf.IntegrationAccount = cloneRaw(in.IntegrationAccount)
+	wf.IntegrationServiceEnvironment = cloneRaw(in.IntegrationServiceEnvironment)
+	wf.Sku = cloneRaw(in.Sku)
 	wf.Revision++
 	wf.ChangedTime = now
 
 	m.store.Set(k, &wf)
 
 	return clone(&wf), !existed, nil
+}
+
+// Update merge-patches an existing workflow (PATCH). The lookup, merge and
+// store happen under one lock, so a concurrent DELETE cannot be undone by a
+// PATCH that read the workflow first, and two concurrent PATCHes both land. A
+// missing workflow is a NotFound error: real ARM answers a PATCH on an absent
+// resource with 404, it never creates one. Like a PUT, a PATCH moves the
+// version and changedTime.
+//
+//nolint:gocritic // patch mirrors a request-scoped value passed once per call.
+func (m *Mock) Update(_ context.Context, sub, rg, name string, patch Patch) (Workflow, error) {
+	if err := validatePatch(&patch); err != nil {
+		return Workflow{}, err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	k := key(sub, rg, name)
+
+	existing, ok := m.store.Get(k)
+	if !ok {
+		return Workflow{}, notFound(rg, name)
+	}
+
+	wf := clone(existing)
+
+	if patch.Tags != nil {
+		wf.Tags = maps.Clone(patch.Tags)
+	}
+
+	if patch.Identity != nil {
+		wf.Identity = m.resolveIdentity(patch.Identity, wf.Subscription, wf.ResourceGroup, wf.Name)
+	}
+
+	if patch.State != "" {
+		wf.State = canonicalState(patch.State)
+	}
+
+	mergeRaw(&wf.Definition, patch.Definition)
+	mergeRaw(&wf.Parameters, patch.Parameters)
+	mergeRaw(&wf.AccessControl, patch.AccessControl)
+	mergeRaw(&wf.IntegrationAccount, patch.IntegrationAccount)
+	mergeRaw(&wf.IntegrationServiceEnvironment, patch.IntegrationServiceEnvironment)
+	mergeRaw(&wf.Sku, patch.Sku)
+
+	wf.Revision++
+	wf.ChangedTime = m.clock.Now().UTC()
+
+	m.store.Set(k, &wf)
+
+	return clone(&wf), nil
+}
+
+// mergeRaw replaces *dst with a copy of src when src was supplied.
+func mergeRaw(dst *json.RawMessage, src json.RawMessage) {
+	if len(src) == 0 {
+		return
+	}
+
+	*dst = cloneRaw(src)
 }
 
 // Get returns the workflow, or a NotFound error.
@@ -217,7 +310,7 @@ func (m *Mock) Get(_ context.Context, sub, rg, name string) (Workflow, error) {
 
 	wf, ok := m.store.Get(key(sub, rg, name))
 	if !ok {
-		return Workflow{}, notFound(name)
+		return Workflow{}, notFound(rg, name)
 	}
 
 	return clone(wf), nil
@@ -245,7 +338,7 @@ func (m *Mock) setState(sub, rg, name, state string) (Workflow, error) {
 
 	wf, ok := m.store.Get(k)
 	if !ok {
-		return Workflow{}, notFound(name)
+		return Workflow{}, notFound(rg, name)
 	}
 
 	updated := clone(wf)
@@ -266,14 +359,15 @@ func (m *Mock) Delete(_ context.Context, sub, rg, name string) (bool, error) {
 }
 
 // ListByResourceGroup returns every workflow in the given resource group,
-// sorted by name.
+// sorted by lowercased ARM id.
 func (m *Mock) ListByResourceGroup(_ context.Context, sub, rg string) ([]Workflow, error) {
 	return m.filter(func(wf *Workflow) bool {
 		return strings.EqualFold(wf.Subscription, sub) && strings.EqualFold(wf.ResourceGroup, rg)
 	}), nil
 }
 
-// ListBySubscription returns every workflow in the subscription, sorted by name.
+// ListBySubscription returns every workflow in the subscription, sorted by
+// lowercased ARM id.
 func (m *Mock) ListBySubscription(_ context.Context, sub string) ([]Workflow, error) {
 	return m.filter(func(wf *Workflow) bool {
 		return strings.EqualFold(wf.Subscription, sub)
@@ -300,7 +394,7 @@ func (m *Mock) PurgeResourceGroup(_ context.Context, sub, rg string) error {
 	return nil
 }
 
-// filter returns the workflows matching pred, sorted by name for a stable order.
+// filter returns the workflows matching pred, sorted by lowercased ARM id.
 func (m *Mock) filter(pred func(*Workflow) bool) []Workflow {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -313,7 +407,11 @@ func (m *Mock) filter(pred func(*Workflow) bool) []Workflow {
 		}
 	}
 
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	// Sort by the lowercased ARM id: names alone collide across resource
+	// groups, and a tie over map iteration order is not stable between calls.
+	sort.Slice(out, func(i, j int) bool {
+		return strings.ToLower(out[i].ARMID()) < strings.ToLower(out[j].ARMID())
+	})
 
 	return out
 }
@@ -325,12 +423,7 @@ func accessEndpoint(sub, rg, name, location string) string {
 	id := strings.ToLower(idgen.AzureID(sub, rg, providerNamespace, resourceType, name))
 	token := strings.ReplaceAll(idgen.SyntheticGUID("access/"+id), "-", "")
 
-	region := strings.ToLower(strings.ReplaceAll(location, " ", ""))
-	if region == "" {
-		region = defaultRegion
-	}
-
-	return accessEndpointScaleUnit + region + accessEndpointSuffix + token
+	return accessEndpointScaleUnit + regionSegment(location) + accessEndpointSuffix + token
 }
 
 // resolveIdentity normalizes an incoming managed identity, synthesizing the
@@ -374,11 +467,63 @@ func validate(sub, rg, name string, in *Input) error {
 		return cerrors.New(cerrors.InvalidArgument, "workflow name is required")
 	case in.Location == "":
 		return cerrors.New(cerrors.InvalidArgument, "location is required")
+	case !validName(name):
+		return cerrors.Newf(cerrors.InvalidArgument,
+			"The workflow name '%s' is invalid. It must be 1-%d characters of alphanumerics, "+
+				"hyphens, underscores, periods and parentheses.", name, maxNameLen)
 	case in.State != "" && !isWritableState(in.State):
 		return cerrors.Newf(cerrors.InvalidArgument, "invalid workflow state %q", in.State)
 	default:
+		return validateDefinition(in.Definition)
+	}
+}
+
+// validatePatch rejects a PATCH carrying a state the caller may not set or a
+// definition that is not a JSON object.
+func validatePatch(p *Patch) error {
+	if p.State != "" && !isWritableState(p.State) {
+		return cerrors.Newf(cerrors.InvalidArgument, "invalid workflow state %q", p.State)
+	}
+
+	return validateDefinition(p.Definition)
+}
+
+// validateDefinition rejects a definition that is present but not a JSON
+// object: the Workflow Definition Language document is always an object, and
+// real Azure answers anything else with 400 InvalidRequestContent. Absent and
+// null are allowed (a workflow may be created without a definition).
+func validateDefinition(raw json.RawMessage) error {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || string(trimmed) == jsonNull {
 		return nil
 	}
+
+	if trimmed[0] != '{' || !json.Valid(trimmed) {
+		return cerrors.New(cerrors.InvalidArgument,
+			"The request content is not valid: the workflow definition must be a JSON object.")
+	}
+
+	return nil
+}
+
+// validName applies the Azure naming rule for Microsoft.Logic/workflows:
+// 1-43 characters of alphanumerics, hyphens, underscores, periods and
+// parentheses (https://learn.microsoft.com/azure/azure-resource-manager/management/resource-name-rules#microsoftlogic).
+func validName(name string) bool {
+	if name == "" || len(name) > maxNameLen {
+		return false
+	}
+
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '-', r == '_', r == '.', r == '(', r == ')':
+		default:
+			return false
+		}
+	}
+
+	return true
 }
 
 // isWritableState reports whether state (case-insensitive) may be set by a caller.
@@ -398,14 +543,16 @@ func canonicalState(state string) string {
 	return ""
 }
 
-// notFound builds the NotFound error for a missing workflow.
-func notFound(name string) error {
-	return cerrors.Newf(cerrors.NotFound, "The Resource 'Microsoft.Logic/workflows/%s' was not found.", name)
+// notFound builds the NotFound error for a missing workflow, worded as ARM's
+// ResourceNotFound message.
+func notFound(rg, name string) error {
+	return cerrors.Newf(cerrors.NotFound,
+		"The Resource 'Microsoft.Logic/workflows/%s' under resource group '%s' was not found.", name, rg)
 }
 
 // cloneRaw copies an opaque JSON value. A JSON null is treated as absent.
 func cloneRaw(raw json.RawMessage) json.RawMessage {
-	if len(raw) == 0 || string(raw) == "null" {
+	if len(raw) == 0 || string(raw) == jsonNull {
 		return nil
 	}
 
@@ -420,6 +567,8 @@ func clone(wf *Workflow) Workflow {
 	out.Parameters = cloneRaw(wf.Parameters)
 	out.AccessControl = cloneRaw(wf.AccessControl)
 	out.IntegrationAccount = cloneRaw(wf.IntegrationAccount)
+	out.IntegrationServiceEnvironment = cloneRaw(wf.IntegrationServiceEnvironment)
+	out.Sku = cloneRaw(wf.Sku)
 
 	if wf.Identity != nil {
 		id := *wf.Identity
