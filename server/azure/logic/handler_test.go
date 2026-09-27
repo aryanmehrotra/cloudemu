@@ -131,7 +131,7 @@ func TestWireCreateGetReplace(t *testing.T) {
 }
 
 func TestWirePatchMergesTagsAndProperties(t *testing.T) {
-	srv, _ := newServer(t)
+	srv, fc := newServer(t)
 	path := basePath + "wf1" + apiVer
 
 	do(t, srv, http.MethodPut, path, `{"location":"eastus","tags":{"a":"1"},`+
@@ -154,12 +154,17 @@ func TestWirePatchMergesTagsAndProperties(t *testing.T) {
 		t.Errorf("property patch: %+v tags=%v", patched.Properties, patched.Tags)
 	}
 
-	// An empty body (what armlogic's Update sends) is a no-op echo.
-	before := patched.Properties.Version
+	// An empty body (what armlogic v1.2.0 Update sends) is an empty patch: it moves
+	// version and changedTime and leaves every field alone.
+	before := patched
+
+	fc.Advance(time.Minute)
 
 	status, patched, _ = do(t, srv, http.MethodPatch, path, "")
-	if status != http.StatusOK || patched.Properties.Version != before {
-		t.Errorf("empty patch: status=%d version %q -> %q", status, before, patched.Properties.Version)
+	if status != http.StatusOK || patched.Properties.Version != "00000000000000000004" ||
+		patched.Properties.ChangedTime == before.Properties.ChangedTime || patched.Properties.State != "Disabled" ||
+		patched.Tags["b"] != "2" || string(patched.Properties.Definition) != wfDef {
+		t.Errorf("empty patch: status=%d before=%+v after=%+v", status, before.Properties, patched.Properties)
 	}
 
 	if status, _, _ := do(t, srv, http.MethodPatch, path, `{"properties":{"state":"Deleted"}}`); status != http.StatusBadRequest {

@@ -499,12 +499,17 @@ func validateDefinition(raw json.RawMessage) error {
 	}
 
 	if trimmed[0] != '{' || !json.Valid(trimmed) {
-		return cerrors.New(cerrors.InvalidArgument,
-			"The request content is not valid: the workflow definition must be a JSON object.")
+		return ErrInvalidDefinition
 	}
 
 	return nil
 }
+
+// ErrInvalidDefinition is returned (unwrapped, an InvalidArgument) when a
+// workflow definition is not a JSON object, so a wire layer can answer it with
+// Azure's InvalidRequestContent code rather than a generic invalid parameter.
+var ErrInvalidDefinition = cerrors.New(cerrors.InvalidArgument,
+	"The request content is not valid: the workflow definition must be a JSON object.")
 
 // validName applies the Azure naming rule for Microsoft.Logic/workflows:
 // 1-43 characters of alphanumerics, hyphens, underscores, periods and

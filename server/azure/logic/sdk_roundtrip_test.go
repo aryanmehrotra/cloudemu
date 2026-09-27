@@ -38,6 +38,7 @@ func (fakeCred) GetToken(_ context.Context, _ policy.TokenRequestOptions) (azcor
 type sdkEnv struct {
 	ts        *httptest.Server
 	workflows *armlogic.WorkflowsClient
+	triggers  *armlogic.WorkflowTriggersClient
 	groups    *armresources.ResourceGroupsClient
 }
 
@@ -76,7 +77,12 @@ func newSDKEnv(t *testing.T) *sdkEnv {
 		t.Fatalf("create resource group: %v", err)
 	}
 
-	return &sdkEnv{ts: ts, workflows: wfc, groups: rgc}
+	trc, err := armlogic.NewWorkflowTriggersClient(sdkSub, fakeCred{}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return &sdkEnv{ts: ts, workflows: wfc, triggers: trc, groups: rgc}
 }
 
 func sdkDefinition() map[string]any {

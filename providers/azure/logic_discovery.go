@@ -31,9 +31,13 @@ func (d logicWorkflowDiscovery) DiscoverResources(
 			Region:  wf.Location,
 			Tags:    wf.Tags,
 			Attrs: resourcediscovery.Attributes{Properties: map[string]any{
-				"provisioningState": wf.ProvisioningState,
-				"state":             wf.State,
+				logicPropProvisioningState: wf.ProvisioningState,
+				"state":                    wf.State,
 			}},
 		}
 	}), nil
 }
+
+// logicPropProvisioningState is the discovery property key for a workflow's
+// provisioning state.
+const logicPropProvisioningState = "provisioningState"
