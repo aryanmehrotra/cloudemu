@@ -543,6 +543,7 @@ func toBackendServiceResponse(tg *lbdriver.TargetGroupInfo, rp gcprest.ResourceP
 	decodeJSONTag(tg.Tags, bsBackendsTag, &resp.Backends)
 	decodeJSONTag(tg.Tags, bsConnDrainTag, &resp.ConnectionDraining)
 	decodeJSONTag(tg.Tags, bsCdnPolicyTag, &resp.CdnPolicy)
+	backendServiceKeyNames(tg.Tags, &resp)
 	resp.EnableCDN = boolTag(tg.Tags, bsEnableCDNTag)
 
 	return resp
@@ -658,7 +659,10 @@ func mergeBackendServiceCDNTags(tags map[string]string, req *backendServiceReque
 	}
 
 	if req.CdnPolicy != nil {
-		encodeJSONTag(tags, bsCdnPolicyTag, req.CdnPolicy)
+		// signedUrlKeyNames is output-only; the names live in bsSignedURLKeysTag.
+		policy := *req.CdnPolicy
+		policy.SignedURLKeyNames = nil
+		encodeJSONTag(tags, bsCdnPolicyTag, &policy)
 	}
 
 	if req.EnableCDN != nil {

@@ -9,7 +9,8 @@ package loadbalancer
 // resources.
 //
 // Surface: insert, get, list, patch (JSON merge patch), update (full replace),
-// delete, setEdgeSecurityPolicy. Every mutation answers a DONE compute#operation
+// delete, setEdgeSecurityPolicy, addSignedUrlKey, deleteSignedUrlKey. Every
+// mutation answers a DONE compute#operation
 // recorded in the shared OperationRegistry, polled at
 // /compute/v1/projects/{p}/global/operations/{op}.
 
@@ -129,6 +130,11 @@ func (h *Handler) routeBackendBucketItem(w http.ResponseWriter, r *http.Request,
 func (h *Handler) backendBucketAction(w http.ResponseWriter, r *http.Request, rp gcprest.ResourcePath,
 	store lbdriver.GCPBackendBucketStore,
 ) {
+	if r.Method == http.MethodPost && isSignedURLKeyAction(rp.Action) {
+		h.backendBucketSignedURLKey(w, r, rp, store)
+		return
+	}
+
 	if r.Method != http.MethodPost || rp.Action != actionSetEdgeSecurityPolicy {
 		gcprest.WriteError(w, http.StatusNotImplemented, "notImplemented",
 			"backendBuckets."+rp.Action+" is not implemented")
@@ -182,6 +188,7 @@ func (h *Handler) insertBackendBucket(w http.ResponseWriter, r *http.Request, rp
 	}
 
 	stripOutputOnly(body)
+	stripClientKeyNames(body)
 	applyBackendBucketDefaults(body)
 
 	if err := h.validateBackendBucket(r.Context(), body, true); err != nil {
@@ -220,6 +227,7 @@ func (h *Handler) mutateBackendBucket(w http.ResponseWriter, r *http.Request, rp
 	}
 
 	stripOutputOnly(body)
+	stripClientKeyNames(body)
 
 	// The GCS lookup happens outside the store lock; only a changed bucketName
 	// needs it.
@@ -233,6 +241,7 @@ func (h *Handler) mutateBackendBucket(w http.ResponseWriter, r *http.Request, rp
 	err := store.UpdateGCPBackendBucket(r.Context(), rp.ResourceName, func(res *lbdriver.GCPResource) error {
 		next := nextBackendBucketBody(res.Body, body, merge)
 		next["name"] = res.Name
+		carryKeyNames(res.Body, next)
 
 		if err := h.validateBackendBucket(r.Context(), next, false); err != nil {
 			return err

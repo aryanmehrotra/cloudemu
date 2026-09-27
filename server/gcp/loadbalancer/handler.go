@@ -155,6 +155,11 @@ func (h *Handler) routeBackendServices(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 
+	if r.Method == http.MethodPost && isSignedURLKeyAction(rp.Action) {
+		h.backendServiceSignedURLKey(w, r, rp)
+		return
+	}
+
 	switch r.Method {
 	case http.MethodGet:
 		h.getBackendService(w, r, rp)

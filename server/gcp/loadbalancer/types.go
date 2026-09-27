@@ -28,6 +28,8 @@ type cdnPolicy struct {
 	DefaultTTL int    `json:"defaultTtl,omitempty"`
 	ClientTTL  int    `json:"clientTtl,omitempty"`
 	MaxTTL     int    `json:"maxTtl,omitempty"`
+	// SignedURLKeyNames is output-only: set through add/deleteSignedUrlKey.
+	SignedURLKeyNames []string `json:"signedUrlKeyNames,omitempty"`
 }
 
 type backendServiceRequest struct {

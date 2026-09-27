@@ -74,6 +74,11 @@ func (h *Handler) routeGCPResource(w http.ResponseWriter, r *http.Request, rp gc
 		return
 	}
 
+	if r.Method == http.MethodPost && rp.ResourceType == resourceURLMaps && rp.Action == actionInvalidateCache {
+		h.invalidateURLMapCache(w, r, rp)
+		return
+	}
+
 	switch r.Method {
 	case http.MethodGet:
 		h.getGCPResource(w, r, rp)
