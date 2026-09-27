@@ -2,9 +2,11 @@ package functions
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 
+	cerrors "github.com/stackshy/cloudemu/v2/errors"
 	azfunctions "github.com/stackshy/cloudemu/v2/providers/azure/functions"
 	"github.com/stackshy/cloudemu/v2/server/wire/azurearm"
 )
@@ -33,7 +35,7 @@ func patchPlan(w http.ResponseWriter, r *http.Request, rp azurearm.ResourcePath,
 	plan, err := store.PatchAppServicePlan(r.Context(), rp.Subscription, rp.ResourceGroup, rp.ResourceName,
 		toPlanPatch(&req))
 	if err != nil {
-		azurearm.WriteCErr(w, err)
+		writePlanErr(w, err)
 		return
 	}
 
@@ -70,4 +72,17 @@ func intOr(p *int) int {
 	}
 
 	return *p
+}
+
+// writePlanErr writes a plan PUT/PATCH error. A refusal the provider tagged
+// with an ARM error code (the 400 BadRequest for an OS change) is echoed with
+// that code; anything else maps as usual.
+func writePlanErr(w http.ResponseWriter, err error) {
+	var pe *azfunctions.PlanError
+	if !errors.As(err, &pe) {
+		azurearm.WriteCErr(w, err)
+		return
+	}
+
+	azurearm.WriteError(w, http.StatusBadRequest, pe.Code, cerrors.Message(err))
 }

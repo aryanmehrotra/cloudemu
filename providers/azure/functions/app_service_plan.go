@@ -145,13 +145,48 @@ func (m *Mock) CreateAppServicePlan(_ context.Context, p AppServicePlan) (*AppSe
 		p.Capacity = 1
 	}
 
-	stored := p
+	if p.Capacity < 0 {
+		return nil, cerrors.Newf(cerrors.InvalidArgument, "Invalid sku.capacity %d: it must be at least 1.", p.Capacity)
+	}
 
-	m.plans.Set(planKey(p.Subscription, p.ResourceGroup, p.Name), &stored)
+	return m.putAppServicePlan(&p)
+}
 
-	out := stored
+// putAppServicePlan stores p, creating the plan or replacing an existing one.
+// A replacement (an ARM re-PUT) is subject to the same checks as a PATCH, run
+// under the store lock: in particular it cannot flip the plan's OS.
+func (m *Mock) putAppServicePlan(p *AppServicePlan) (*AppServicePlan, error) {
+	key := planKey(p.Subscription, p.ResourceGroup, p.Name)
 
-	return &out, nil
+	for {
+		var putErr error
+
+		replaced := m.plans.Update(key, func(cur *AppServicePlan) *AppServicePlan {
+			if err := checkPlanUpdate(cur, p); err != nil {
+				putErr = err
+				return cur
+			}
+
+			stored := *p
+
+			return &stored
+		})
+
+		if putErr != nil {
+			return nil, putErr
+		}
+
+		if !replaced {
+			stored := *p
+			if !m.plans.SetIfAbsent(key, &stored) {
+				continue // created concurrently: replace it instead
+			}
+		}
+
+		out := *p
+
+		return &out, nil
+	}
 }
 
 // GetAppServicePlan returns one App Service plan scoped to the given
@@ -249,22 +284,35 @@ type AppServicePlanPatch struct {
 
 // PatchAppServicePlan applies a partial update to one App Service plan scoped
 // to the given subscription and resource group, returning the stored result or
-// NotFound. The read-modify-write runs under the store lock. A SKU name change
-// without an explicit tier re-derives the tier, as a create does.
+// NotFound. The read-modify-write and the checks in checkPlanUpdate (no OS
+// change, a known SKU in the same plan family, a matching tier, a capacity in
+// range) run under the store lock. A SKU name change re-derives the tier.
 func (m *Mock) PatchAppServicePlan(
 	_ context.Context, subscription, resourceGroup, name string, patch AppServicePlanPatch,
 ) (*AppServicePlan, error) {
 	var out AppServicePlan
 
+	var patchErr error
+
 	found := m.plans.Update(planKey(subscription, resourceGroup, name), func(p *AppServicePlan) *AppServicePlan {
 		next := *p
 		applyPlanPatch(&next, &patch)
+
+		if err := checkPlanUpdate(p, &next); err != nil {
+			patchErr = err
+			return p
+		}
+
 		out = next
 
 		return &next
 	})
 	if !found {
 		return nil, cerrors.Newf(cerrors.NotFound, "app service plan %s not found", name)
+	}
+
+	if patchErr != nil {
+		return nil, patchErr
 	}
 
 	return &out, nil
@@ -278,7 +326,7 @@ func applyPlanPatch(p *AppServicePlan, patch *AppServicePlanPatch) {
 	setIf(&p.ZoneRedundant, patch.ZoneRedundant)
 	setIf(&p.MaximumElasticWorkerCount, patch.MaximumElasticWorkerCount)
 
-	if patch.SKUName != nil && *patch.SKUName != "" && *patch.SKUName != p.SKUName {
+	if patch.SKUName != nil && *patch.SKUName != "" && !strings.EqualFold(*patch.SKUName, p.SKUName) {
 		p.SKUName = *patch.SKUName
 		p.SKUTier = deriveSKUTier(p.SKUName)
 	}

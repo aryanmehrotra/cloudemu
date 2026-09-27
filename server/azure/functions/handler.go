@@ -38,6 +38,9 @@ const (
 	resourceType    = "sites"
 	serverFarmsType = "serverfarms"
 
+	// provisioningSucceeded is the ARM provisioningState of a settled resource.
+	provisioningSucceeded = "Succeeded"
+
 	functionAppKind  = "functionapp"
 	defaultLocation  = "eastus"
 	invokePathPrefix = "/api/"
@@ -745,7 +748,7 @@ func createPlan(w http.ResponseWriter, r *http.Request, rp azurearm.ResourcePath
 		MaximumElasticWorkerCount: intOr(props.MaximumElasticWorkerCount),
 	})
 	if err != nil {
-		azurearm.WriteCErr(w, err)
+		writePlanErr(w, err)
 		return
 	}
 
@@ -850,7 +853,7 @@ func toServerFarmResource(rp azurearm.ResourcePath, plan *azfunctions.AppService
 			Capacity: plan.Capacity,
 		},
 		Properties: serverFarmProperties{
-			ProvisioningState:         "Succeeded",
+			ProvisioningState:         provisioningSucceeded,
 			Status:                    "Ready",
 			Reserved:                  plan.Reserved,
 			PerSiteScaling:            plan.PerSiteScaling,
@@ -931,7 +934,7 @@ func upsertFunction(r *http.Request, fn sdrv.Serverless, cfg sdrv.FunctionConfig
 //nolint:gocritic // rp is request-scoped.
 func toSiteResource(rp azurearm.ResourcePath, info *sdrv.FunctionInfo, meta *azfunctions.SiteMeta) siteResource {
 	location := defaultLocation
-	provisioningState := "Succeeded"
+	provisioningState := provisioningSucceeded
 	kind := functionAppKind
 	state := siteStateRunning
 
