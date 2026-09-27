@@ -60,10 +60,7 @@ func applyPSCFields(out *forwardingRuleResponse, lb *lbdriver.LBInfo) {
 		return
 	}
 
-	id := fnvHash("psc:" + lb.ID)
-	if id == 0 {
-		id = 1
-	}
+	id := positiveID(fnvHash("psc:" + lb.ID))
 
 	out.PscConnectionStatus = pscStatusAccepted
 	out.PscConnectionID = strconv.FormatUint(id, 10)

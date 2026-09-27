@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -934,8 +935,23 @@ func fnvHash(s string) uint64 {
 
 // numericID returns a stable uint64-shaped string derived from a driver ID.
 // GCP wire IDs are uint64 and proto JSON unmarshalling rejects anything else.
+// The value is kept within int64 as well: Terraform's google provider reads
+// every compute id into an int (e.g. forwarding_rule_id), and a full-range
+// uint64 fails that read with "expected type 'int', got unconvertible type
+// 'string'". Real GCP ids never set the top bit.
 func numericID(driverID string) string {
-	return strconv.FormatUint(fnvHash(driverID), 10)
+	return strconv.FormatUint(positiveID(fnvHash(driverID)), 10)
+}
+
+// positiveID masks a hash to a non-zero 63-bit value, so a synthetic numeric
+// id fits both uint64 (the proto type) and int64 (the Terraform schema type).
+func positiveID(h uint64) uint64 {
+	n := h & math.MaxInt64
+	if n == 0 {
+		n = 1
+	}
+
+	return n
 }
 
 // fingerprintOf returns a stable base64 fingerprint for a resource. GCP returns
