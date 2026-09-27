@@ -2,6 +2,7 @@ package vpc
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/stackshy/cloudemu/v2/errors"
@@ -167,4 +168,129 @@ func TestAddressingResourceTagger(t *testing.T) {
 			t.Fatalf("UpdateResourceTags(%s) = %v, want NotFound", id, err)
 		}
 	}
+}
+
+// TestRemoveResourceTagsWithoutKeysKeepsReservedTags pins EC2 DeleteTags with no
+// Tag parameter: every user tag goes, the AWS-generated "aws:" tags stay. Before
+// the fix an empty key list removed nothing.
+func TestRemoveResourceTagsWithoutKeysKeepsReservedTags(t *testing.T) {
+	ctx := context.Background()
+	m := newTestMock()
+
+	eip, err := m.AllocateAddress(ctx, driver.ElasticIPConfig{Tags: map[string]string{
+		"Name": "eip", "env": "prod", "aws:cloudformation:stack-name": "s",
+	}})
+	requireNoError(t, err)
+
+	requireNoError(t, m.RemoveResourceTags(ctx, eip.AllocationID, nil))
+
+	got, err := m.ResourceTags(ctx, eip.AllocationID)
+	requireNoError(t, err)
+
+	if len(got) != 1 || got["aws:cloudformation:stack-name"] != "s" {
+		t.Fatalf("tags after RemoveResourceTags(nil) = %v, want only the aws: tag", got)
+	}
+}
+
+// TestResourceTagsReadsEveryTaggableID covers ResourceTags on each id family the
+// EC2 tag handler routes to this provider, that it returns a copy, and that an
+// unknown id is NotFound.
+func TestResourceTagsReadsEveryTaggableID(t *testing.T) {
+	ctx := context.Background()
+	m := newTestMock()
+
+	v, err := m.CreateVPC(ctx, driver.VPCConfig{CIDRBlock: "10.0.0.0/16", Tags: map[string]string{"k": "vpc"}})
+	requireNoError(t, err)
+
+	s, err := m.CreateSubnet(ctx, driver.SubnetConfig{VPCID: v.ID, CIDRBlock: "10.0.1.0/24", Tags: map[string]string{"k": "subnet"}})
+	requireNoError(t, err)
+
+	sg, err := m.CreateSecurityGroup(ctx, driver.SecurityGroupConfig{VPCID: v.ID, Name: "sg", Description: "d", Tags: map[string]string{"k": "sg"}})
+	requireNoError(t, err)
+
+	eip, err := m.AllocateAddress(ctx, driver.ElasticIPConfig{Tags: map[string]string{"k": "eip"}})
+	requireNoError(t, err)
+
+	rt, err := m.CreateRouteTable(ctx, driver.RouteTableConfig{VPCID: v.ID})
+	requireNoError(t, err)
+	requireNoError(t, m.UpdateResourceTags(ctx, rt.ID, map[string]string{"k": "rtb"}))
+
+	for id, want := range map[string]string{v.ID: "vpc", s.ID: "subnet", sg.ID: "sg", eip.AllocationID: "eip", rt.ID: "rtb"} {
+		got, err := m.ResourceTags(ctx, id)
+		requireNoError(t, err)
+		assertEqual(t, want, got["k"])
+
+		got["k"] = "mutated"
+
+		again, err := m.ResourceTags(ctx, id)
+		requireNoError(t, err)
+		assertEqual(t, want, again["k"])
+	}
+
+	for _, id := range []string{"vpc-missing", "subnet-missing", "sg-missing", "eipalloc-missing", "rtb-missing", "vol-other"} {
+		if _, err := m.ResourceTags(ctx, id); !isNotFound(err) {
+			t.Fatalf("ResourceTags(%s) = %v, want NotFound", id, err)
+		}
+	}
+}
+
+// TestAddressingTagWriteDoesNotRaceDescribe pins the m.mu the tag writer holds
+// for Elastic IPs and VPC endpoints: DescribeAddresses / DescribeVPCEndpoints
+// read the record's Tags field under m.mu.RLock, so without the writer's lock
+// this trips -race. ModifyVPCEndpoint writes the same record and is run too.
+func TestAddressingTagWriteDoesNotRaceDescribe(t *testing.T) {
+	ctx := context.Background()
+	m := newTestMock()
+	v := createTestVPC(m)
+
+	eip, err := m.AllocateAddress(ctx, driver.ElasticIPConfig{})
+	requireNoError(t, err)
+
+	ep, err := m.CreateVPCEndpoint(ctx, driver.VPCEndpointConfig{
+		VPCID: v.ID, ServiceName: "com.amazonaws.us-east-1.s3", EndpointType: "Gateway",
+	})
+	requireNoError(t, err)
+
+	const iters = 200
+
+	var wg sync.WaitGroup
+
+	wg.Add(4)
+
+	go func() {
+		defer wg.Done()
+
+		for i := 0; i < iters; i++ {
+			_ = m.UpdateResourceTags(ctx, eip.AllocationID, map[string]string{"k": "v"})
+			_ = m.UpdateResourceTags(ctx, ep.ID, map[string]string{"k": "v"})
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+
+		for i := 0; i < iters; i++ {
+			_, _ = m.ModifyVPCEndpoint(ctx, ep.ID, driver.VPCEndpointConfig{
+				RouteTableIDs: []string{"rtb-1"}, Tags: map[string]string{"m": "v"},
+			})
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+
+		for i := 0; i < iters; i++ {
+			_, _ = m.DescribeAddresses(ctx, []string{eip.AllocationID})
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+
+		for i := 0; i < iters; i++ {
+			_, _ = m.DescribeVPCEndpoints(ctx, []string{ep.ID})
+		}
+	}()
+
+	wg.Wait()
 }
