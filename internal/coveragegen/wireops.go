@@ -63,7 +63,8 @@ var nativeWireOperations = map[string][]string{ //nolint:gochecknoglobals // gen
 		"GetMetadataEndpoints", "GetToken",
 	},
 	"azure/disks": {
-		"CreateOrUpdate", "Delete", "Get", "GrantAccess", "List", "ListByResourceGroup", "RevokeAccess", "Update",
+		"CreateOrUpdate", "Delete", "Get", "GrantAccess", "List", "ListByResourceGroup", "RevokeAccess",
+		"Update", //nolint:goconst // SDK operation names are table data; the file already repeats them (pre-existing goconst hits)
 	},
 	"azure/snapshots": {
 		"CreateOrUpdate", "Delete", "Get", "List", "ListByResourceGroup",
