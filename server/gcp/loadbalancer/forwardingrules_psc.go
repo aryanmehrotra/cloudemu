@@ -39,18 +39,54 @@ func isPSCTarget(target string) bool {
 	return isGoogleAPIsBundle(target) || strings.Contains(target, pscServiceAttachmentsSegment)
 }
 
-// validatePSCTarget rejects a Google APIs bundle target on a regional rule:
-// all-apis / vpc-sc are only valid on global forwarding rules.
+// validatePSCTarget checks the fields GCP constrains on a Private Service
+// Connect consumer rule; a rule whose target is not a PSC target passes:
+//
+//   - a Google APIs bundle (all-apis / vpc-sc) is only valid on a global rule;
+//   - the consumer VPC must be named: the endpoint is an internal address in
+//     that network, so a PSC rule without `network` is refused;
+//   - loadBalancingScheme must be empty — a PSC endpoint is not a load
+//     balancer, and GCP refuses any explicit scheme (EXTERNAL, INTERNAL, …).
 //
 //nolint:gocritic // rp is a request-scoped value
-func validatePSCTarget(rp gcprest.ResourcePath, target string) error {
-	if isGoogleAPIsBundle(target) && rp.Scope != gcprest.ScopeGlobal {
+func validatePSCTarget(rp gcprest.ResourcePath, req *forwardingRuleRequest) error {
+	if !isPSCTarget(req.Target) {
+		return nil
+	}
+
+	if isGoogleAPIsBundle(req.Target) && rp.Scope != gcprest.ScopeGlobal {
 		return cerrors.Newf(cerrors.InvalidArgument,
 			"Invalid value for field 'resource.target': '%s'. A Google APIs bundle target is only valid on a global forwarding rule.",
-			target)
+			req.Target)
+	}
+
+	if req.Network == "" {
+		return cerrors.New(cerrors.InvalidArgument,
+			"Invalid value for field 'resource.network': ''. A network must be specified for a Private Service Connect forwarding rule.")
+	}
+
+	if req.LoadBalancingScheme != "" {
+		return cerrors.Newf(cerrors.InvalidArgument,
+			"Invalid value for field 'resource.loadBalancingScheme': '%s'. The load balancing scheme must be empty for a Private Service Connect forwarding rule.",
+			req.LoadBalancingScheme)
 	}
 
 	return nil
+}
+
+// pscInternalIP derives the stable internal (RFC 1918) address a PSC consumer
+// rule sent without an IPAddress gets: the endpoint lives in the consumer's
+// VPC, so it is never an external 34.x address.
+func pscInternalIP(lb *lbdriver.LBInfo) string {
+	h := fnvHash("pscip:" + lb.ID + lb.Name)
+
+	const octetMod = 254
+
+	o2 := byte(h%octetMod) + 1
+	o3 := byte((h>>8)%octetMod) + 1
+	o4 := byte((h>>16)%octetMod) + 1
+
+	return "10." + strconv.Itoa(int(o2)) + "." + strconv.Itoa(int(o3)) + "." + strconv.Itoa(int(o4))
 }
 
 // applyPSCFields sets pscConnectionStatus and a stable pscConnectionId on a

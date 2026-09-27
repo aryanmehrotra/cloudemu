@@ -328,7 +328,7 @@ func (h *Handler) insertForwardingRule(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 
-	if err := h.validateForwardingRuleTarget(r.Context(), rp, req.Target); err != nil {
+	if err := h.validateForwardingRuleTarget(r.Context(), rp, &req); err != nil {
 		gcprest.WriteCErr(w, err)
 		return
 	}
@@ -1031,6 +1031,10 @@ func forwardingRuleTags(req *forwardingRuleRequest) map[string]string {
 func forwardingRuleIP(lb *lbdriver.LBInfo) string {
 	if ip := lb.Tags[frIPAddressTag]; ip != "" {
 		return ip
+	}
+
+	if isPSCTarget(lb.Tags[frTargetTag]) {
+		return pscInternalIP(lb)
 	}
 
 	// Derive a deterministic public-looking IPv4 from the LB identity.

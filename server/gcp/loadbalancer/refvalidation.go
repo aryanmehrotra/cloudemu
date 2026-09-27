@@ -249,15 +249,17 @@ func invalidRefErr(field, ref, noun string) error {
 // unvalidated rather than falsely rejected.
 //
 //nolint:gocritic // rp is a request-scoped value
-func (h *Handler) validateForwardingRuleTarget(ctx context.Context, rp gcprest.ResourcePath, target string) error {
+func (h *Handler) validateForwardingRuleTarget(ctx context.Context, rp gcprest.ResourcePath,
+	req *forwardingRuleRequest,
+) error {
+	target := req.Target
 	if target == "" {
 		return nil
 	}
 
-	// A PSC service-attachment target names a producer resource the emulator
-	// does not model, so it is accepted unvalidated (targetCollectionFor does not
-	// recognize it); a Google APIs bundle is only valid on a global rule.
-	if err := validatePSCTarget(rp, target); err != nil {
+	// A PSC consumer rule has its own field rules (validatePSCTarget);
+	// targetCollectionFor does not recognize a PSC target.
+	if err := validatePSCTarget(rp, req); err != nil {
 		return err
 	}
 
