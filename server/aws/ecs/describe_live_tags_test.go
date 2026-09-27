@@ -80,6 +80,8 @@ func liveTagsCases() []liveTagsCase {
 		{name: "cluster", create: createTaggedCluster, describe: describeClusterTags},
 		{name: "task-definition", create: createTaggedTaskDef, describe: describeTaskDefTags},
 		{name: "task", create: createTaggedTask, describe: describeTaskTags},
+		{name: "container-instance", create: createTaggedInstance, describe: describeInstanceTags},
+		{name: "capacity-provider", create: createTaggedCapacityProvider, describe: describeCapacityProviderTags},
 	}
 }
 
@@ -224,4 +226,72 @@ func tagMap(tags []ecstypes.Tag) map[string]string {
 	}
 
 	return out
+}
+
+func createTaggedInstance(t *testing.T, client *awsecs.Client, ctx context.Context, tags []ecstypes.Tag) string {
+	t.Helper()
+
+	out, err := client.RegisterContainerInstance(ctx, &awsecs.RegisterContainerInstanceInput{
+		Cluster: aws.String("prod"),
+		Tags:    tags,
+	})
+	if err != nil {
+		t.Fatalf("RegisterContainerInstance: %v", err)
+	}
+
+	return aws.ToString(out.ContainerInstance.ContainerInstanceArn)
+}
+
+func describeInstanceTags(t *testing.T, client *awsecs.Client, ctx context.Context, arn string) []ecstypes.Tag {
+	t.Helper()
+
+	out, err := client.DescribeContainerInstances(ctx, &awsecs.DescribeContainerInstancesInput{
+		Cluster:            aws.String("prod"),
+		ContainerInstances: []string{arn},
+		Include:            []ecstypes.ContainerInstanceField{ecstypes.ContainerInstanceFieldTags},
+	})
+	if err != nil {
+		t.Fatalf("DescribeContainerInstances: %v", err)
+	}
+
+	if len(out.ContainerInstances) != 1 {
+		t.Fatalf("DescribeContainerInstances = %d instances, want 1", len(out.ContainerInstances))
+	}
+
+	return out.ContainerInstances[0].Tags
+}
+
+func createTaggedCapacityProvider(t *testing.T, client *awsecs.Client, ctx context.Context, tags []ecstypes.Tag) string {
+	t.Helper()
+
+	out, err := client.CreateCapacityProvider(ctx, &awsecs.CreateCapacityProviderInput{
+		Name: aws.String("asg-cp"),
+		AutoScalingGroupProvider: &ecstypes.AutoScalingGroupProvider{
+			AutoScalingGroupArn: aws.String("arn:aws:autoscaling:us-east-1:000000000000:autoScalingGroup:x:autoScalingGroupName/asg"),
+		},
+		Tags: tags,
+	})
+	if err != nil {
+		t.Fatalf("CreateCapacityProvider: %v", err)
+	}
+
+	return aws.ToString(out.CapacityProvider.CapacityProviderArn)
+}
+
+func describeCapacityProviderTags(t *testing.T, client *awsecs.Client, ctx context.Context, arn string) []ecstypes.Tag {
+	t.Helper()
+
+	out, err := client.DescribeCapacityProviders(ctx, &awsecs.DescribeCapacityProvidersInput{
+		CapacityProviders: []string{arn},
+		Include:           []ecstypes.CapacityProviderField{ecstypes.CapacityProviderFieldTags},
+	})
+	if err != nil {
+		t.Fatalf("DescribeCapacityProviders: %v", err)
+	}
+
+	if len(out.CapacityProviders) != 1 {
+		t.Fatalf("DescribeCapacityProviders = %d providers, want 1", len(out.CapacityProviders))
+	}
+
+	return out.CapacityProviders[0].Tags
 }

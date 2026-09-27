@@ -6024,6 +6024,9 @@
     "interface": "ECS",
     "operations": [
       {
+        "name": "CreateCapacityProvider"
+      },
+      {
         "name": "CreateCluster"
       },
       {
@@ -6036,6 +6039,9 @@
         "name": "DeleteAttributes"
       },
       {
+        "name": "DeleteCapacityProvider"
+      },
+      {
         "name": "DeleteCluster"
       },
       {
@@ -6046,6 +6052,9 @@
       },
       {
         "name": "DeregisterTaskDefinition"
+      },
+      {
+        "name": "DescribeCapacityProviders"
       },
       {
         "name": "DescribeClusters"
@@ -6121,6 +6130,9 @@
       },
       {
         "name": "UntagResource"
+      },
+      {
+        "name": "UpdateCapacityProvider"
       },
       {
         "name": "UpdateCluster"
