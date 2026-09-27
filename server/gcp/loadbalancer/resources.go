@@ -306,7 +306,9 @@ func (h *Handler) deleteGCPResource(w http.ResponseWriter, r *http.Request, rp g
 //
 //nolint:gocritic // rp is a request-scoped value
 func gcpResourceJSON(res *lbdriver.GCPResource, rp gcprest.ResourcePath, host string) map[string]any {
-	out := make(map[string]any, len(res.Body)+internalFieldCount)
+	// Size hint from the body alone: adding to a caller-sized length is an
+	// unchecked addition, and the map grows for the few server-injected members.
+	out := make(map[string]any, len(res.Body))
 
 	for k, v := range res.Body {
 		// Reserved internal members (e.g. instance-group membership) are stored in
@@ -339,11 +341,6 @@ func gcpResourceJSON(res *lbdriver.GCPResource, rp gcprest.ResourcePath, host st
 
 	return out
 }
-
-// internalFieldCount is the number of server-injected members gcpResourceJSON
-// adds on top of the stored body (kind, id, name, creationTimestamp, selfLink,
-// region/zone, size).
-const internalFieldCount = 7
 
 // healthCheckInUse returns the name of a same-scope backend service whose
 // healthChecks[] references the health check being deleted, or "" when none
