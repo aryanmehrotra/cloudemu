@@ -121,8 +121,6 @@ func (m *Mock) DeleteGCPServiceAttachment(_ context.Context, region, name string
 
 // ConnectGCPServiceAttachment appends a consumer endpoint and returns the
 // status the evaluation gave it.
-//
-//nolint:gocritic // hugeParam: interface method signature is fixed.
 func (m *Mock) ConnectGCPServiceAttachment(_ context.Context, region, name string,
 	ep driver.GCPPSCEndpoint,
 ) (string, error) {
@@ -245,6 +243,12 @@ func validateServiceAttachment(body map[string]any) error {
 			"Invalid value for field 'resource.natSubnets': ''. At least one NAT subnetwork must be specified.")
 	}
 
+	return validateAcceptLists(body)
+}
+
+// validateAcceptLists checks each consumerAcceptLists entry names a consumer
+// and carries a non-negative connectionLimit.
+func validateAcceptLists(body map[string]any) error {
 	accept, _ := body[saAcceptLists].([]any)
 	for i, raw := range accept {
 		entry, _ := raw.(map[string]any)

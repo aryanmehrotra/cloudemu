@@ -42,8 +42,6 @@ func cloneAddress(a *driver.GCPAddress) driver.GCPAddress {
 
 // InsertGCPAddress stores a new reserved address and stamps its
 // labelFingerprint from the labels it was created with.
-//
-//nolint:gocritic // hugeParam: interface method signature is fixed.
 func (m *Mock) InsertGCPAddress(_ context.Context, addr driver.GCPAddress) error {
 	obj, err := addressObject(addr.Body)
 	if err != nil {

@@ -55,9 +55,23 @@ func (h *Handler) routeServiceAttachments(w http.ResponseWriter, r *http.Request
 	}
 
 	switch {
-	case rp.ResourceName == "" && r.Method == http.MethodPost:
+	case rp.ResourceName == "":
+		h.routeServiceAttachmentCollection(w, r, rp, store)
+	case rp.Action == "":
+		h.routeServiceAttachmentItem(w, r, rp, store)
+	default:
+		gcprest.WriteError(w, http.StatusMethodNotAllowed, "methodNotAllowed", "method not allowed")
+	}
+}
+
+//nolint:gocritic // rp is a request-scoped value
+func (h *Handler) routeServiceAttachmentCollection(w http.ResponseWriter, r *http.Request, rp gcprest.ResourcePath,
+	store lbdriver.GCPServiceAttachmentStore,
+) {
+	switch r.Method {
+	case http.MethodPost:
 		h.insertServiceAttachment(w, r, rp, store)
-	case rp.ResourceName == "" && r.Method == http.MethodGet:
+	case http.MethodGet:
 		items, err := store.ListGCPServiceAttachments(r.Context(), rp.ScopeName)
 		if err != nil {
 			gcprest.WriteCErr(w, err)
@@ -65,7 +79,17 @@ func (h *Handler) routeServiceAttachments(w http.ResponseWriter, r *http.Request
 		}
 
 		writeGCPResourceList(w, r, rp, items)
-	case rp.ResourceName != "" && rp.Action == "" && r.Method == http.MethodGet:
+	default:
+		gcprest.WriteError(w, http.StatusMethodNotAllowed, "methodNotAllowed", "method not allowed")
+	}
+}
+
+//nolint:gocritic // rp is a request-scoped value
+func (h *Handler) routeServiceAttachmentItem(w http.ResponseWriter, r *http.Request, rp gcprest.ResourcePath,
+	store lbdriver.GCPServiceAttachmentStore,
+) {
+	switch r.Method {
+	case http.MethodGet:
 		res, err := store.GetGCPServiceAttachment(r.Context(), rp.ScopeName, rp.ResourceName)
 		if err != nil {
 			gcprest.WriteCErr(w, err)
@@ -73,9 +97,9 @@ func (h *Handler) routeServiceAttachments(w http.ResponseWriter, r *http.Request
 		}
 
 		gcprest.WriteJSON(w, http.StatusOK, gcpResourceJSON(res, rp, hostOf(r)))
-	case rp.ResourceName != "" && rp.Action == "" && r.Method == http.MethodPatch:
+	case http.MethodPatch:
 		h.patchServiceAttachment(w, r, rp, store)
-	case rp.ResourceName != "" && rp.Action == "" && r.Method == http.MethodDelete:
+	case http.MethodDelete:
 		if err := store.DeleteGCPServiceAttachment(r.Context(), rp.ScopeName, rp.ResourceName); err != nil {
 			gcprest.WriteCErr(w, err)
 			return

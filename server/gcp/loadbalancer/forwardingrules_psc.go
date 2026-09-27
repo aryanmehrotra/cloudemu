@@ -69,7 +69,8 @@ func validatePSCTarget(rp gcprest.ResourcePath, req *forwardingRuleRequest) erro
 
 	if req.LoadBalancingScheme != "" {
 		return cerrors.Newf(cerrors.InvalidArgument,
-			"Invalid value for field 'resource.loadBalancingScheme': '%s'. The load balancing scheme must be empty for a Private Service Connect forwarding rule.",
+			"Invalid value for field 'resource.loadBalancingScheme': '%s'. "+
+				"The load balancing scheme must be empty for a Private Service Connect forwarding rule.",
 			req.LoadBalancingScheme)
 	}
 
