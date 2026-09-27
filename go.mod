@@ -11,6 +11,7 @@ require (
 	cloud.google.com/go/firestore v1.22.0
 	cloud.google.com/go/iam v1.11.0
 	cloud.google.com/go/longrunning v1.2.0
+	cloud.google.com/go/managedkafka v1.0.0
 	cloud.google.com/go/secretmanager v1.16.0
 	cloud.google.com/go/storage v1.62.1
 	github.com/Azure/azure-kusto-go v0.16.1

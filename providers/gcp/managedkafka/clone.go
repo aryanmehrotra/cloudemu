@@ -10,8 +10,21 @@ func cloneCluster(c *mkdriver.Cluster) mkdriver.Cluster {
 	out := *c
 	out.Subnets = append([]string(nil), c.Subnets...)
 	out.Labels = cloneStringMap(c.Labels)
+	out.TLS = cloneTLS(c.TLS)
 
 	return out
+}
+
+// cloneTLS deep-copies a TLS config; nil stays nil.
+func cloneTLS(in *mkdriver.TLSConfig) *mkdriver.TLSConfig {
+	if in == nil {
+		return nil
+	}
+
+	out := *in
+	out.CAPools = append([]string(nil), in.CAPools...)
+
+	return &out
 }
 
 // cloneTopic returns a deep copy of t.

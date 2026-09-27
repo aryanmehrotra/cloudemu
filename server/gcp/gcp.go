@@ -401,15 +401,25 @@ func New(d Drivers) *server.Server {
 
 	// Managed Kafka shares the exact /v1/projects/{p}/locations/{l}/clusters[/…]
 	// grammar with GKE and AlloyDB (all greedy on that collection), so it
-	// registers AHEAD of both and its Matches claims only genuinely-Kafka traffic:
-	// a create body carrying capacityConfig/gcpConfig, an item/list it owns, or
-	// the Kafka-only clusters/{c}/topics sub-collection. Everything else falls
-	// through. Its registry is wired below, once the shared LRO poller exists,
-	// which also makes it yield location operation polls to that poller.
+	// registers AHEAD of both and its Matches claims only genuinely-Kafka traffic,
+	// routed by ownership against whichever of GKE / AlloyDB is enabled: a
+	// Kafka-shaped create, an item it owns, a list only where the sibling owns no
+	// cluster, or the Kafka-only clusters/{c}/topics sub-collection. Everything
+	// else falls through. Its registry is wired below, once the shared LRO
+	// poller exists, which also makes it yield location operation polls to that
+	// poller.
 	var kafkaH *managedkafkasrv.Handler
 
 	if d.ManagedKafka != nil {
 		kafkaH = managedkafkasrv.New(d.ManagedKafka)
+
+		switch {
+		case d.GKE != nil:
+			kafkaH.SetClusterSibling(gkeClusterSibling{m: d.GKE})
+		case d.AlloyDB != nil:
+			kafkaH.SetClusterSibling(alloyDBClusterSibling{db: d.AlloyDB})
+		}
+
 		srv.Register(kafkaH)
 	}
 

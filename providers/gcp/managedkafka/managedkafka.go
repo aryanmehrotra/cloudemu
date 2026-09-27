@@ -8,6 +8,7 @@ package managedkafka
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 	cerrors "github.com/stackshy/cloudemu/v2/errors"
 	"github.com/stackshy/cloudemu/v2/internal/idgen"
 	"github.com/stackshy/cloudemu/v2/internal/memstore"
+	"github.com/stackshy/cloudemu/v2/internal/settle"
 	mkdriver "github.com/stackshy/cloudemu/v2/services/managedkafka/driver"
 )
 
@@ -25,13 +27,32 @@ const (
 	clustersColl = "clusters"
 	topicsColl   = "topics"
 
-	// stateActive is the steady state a created cluster reports. Real Managed
-	// Kafka passes through CREATING first; CloudEmu completes synchronously.
-	stateActive = "ACTIVE"
+	// stateActive is the steady state a cluster reports. stateCreating is the
+	// transient state a new cluster reports for a settle window under
+	// config.Options.AsyncSettle (real Managed Kafka passes through CREATING);
+	// with AsyncSettle off (the default) a new cluster is ACTIVE at once.
+	stateActive   = "ACTIVE"
+	stateCreating = "CREATING"
+
+	// defaultKafkaVersion is the version the real API assigns when a create
+	// leaves kafkaVersion unset.
+	defaultKafkaVersion = "3.7.x"
+
+	// apiVersion is the OperationMetadata.apiVersion every operation reports.
+	apiVersion = "v1"
+
+	// maxOperations bounds the operation store: the oldest operation is evicted
+	// once more than this many exist, so a long-lived emulator does not grow
+	// without bound. Every operation is done when returned, so an evicted name
+	// only matters to a caller that polls it far later (it is then NOT_FOUND,
+	// as a garbage-collected real operation is).
+	maxOperations = 1000
 
 	opCreate = "create"
 	opUpdate = "update"
 	opDelete = "delete"
+
+	opNameMarker = "/operations/operation-"
 )
 
 // Mock is the in-memory Managed Kafka control-plane implementation. Clusters and
@@ -43,6 +64,10 @@ type Mock struct {
 	topics     *memstore.Store[mkdriver.Topic]
 	operations *memstore.Store[mkdriver.Operation]
 
+	// creating overlays a transient CREATING window (keyed by cluster name) on
+	// the stored ACTIVE state; inert unless config.Options.AsyncSettle is set.
+	creating *settle.Set
+
 	opSeq atomic.Uint64
 	opts  *config.Options
 }
@@ -53,6 +78,7 @@ func New(opts *config.Options) *Mock {
 		clusters:   memstore.New[mkdriver.Cluster](),
 		topics:     memstore.New[mkdriver.Topic](),
 		operations: memstore.New[mkdriver.Operation](),
+		creating:   settle.NewSet(),
 		opts:       opts,
 	}
 }
@@ -68,28 +94,80 @@ func topicName(project, location, clusterID, id string) string {
 }
 
 // newOp records a completed operation scoped to the project+location it acted in
-// and returns it. The caller holds the write lock.
+// and returns it, evicting the oldest operation past maxOperations. The caller
+// holds the write lock.
 func (m *Mock) newOp(project, location, opType, target string) *mkdriver.Operation {
+	now := m.opts.Clock.Now().UTC()
 	scope := "projects/" + project + "/locations/" + location
 	op := mkdriver.Operation{
-		Name:       fmt.Sprintf("%s/operations/operation-%d-%s", scope, m.opSeq.Add(1), idgen.UUID()),
+		Name:       fmt.Sprintf("%s%s%d-%s", scope, opNameMarker, m.opSeq.Add(1), idgen.UUID()),
 		Done:       true,
 		TargetName: target,
 		Type:       opType,
+		APIVersion: apiVersion,
+		CreateTime: now,
+		EndTime:    now,
 	}
 	m.operations.Set(op.Name, op)
+	m.evictOldestOps()
 
 	return &op
 }
 
-// CreateCluster validates and stores a new cluster, reporting it ACTIVE, and
-// returns the completed LRO.
+// evictOldestOps drops the lowest-sequence operations until at most
+// maxOperations remain. The caller holds the write lock.
+func (m *Mock) evictOldestOps() {
+	for m.operations.Len() > maxOperations {
+		oldest, oldestSeq := "", uint64(0)
+
+		for _, k := range m.operations.Keys() {
+			if seq := opSeqOf(k); oldest == "" || seq < oldestSeq {
+				oldest, oldestSeq = k, seq
+			}
+		}
+
+		m.operations.Delete(oldest)
+	}
+}
+
+// opSeqOf parses the sequence number out of an operation name
+// ".../operations/operation-{seq}-{uuid}"; an unparseable name sorts first.
+func opSeqOf(name string) uint64 {
+	_, rest, ok := strings.Cut(name, opNameMarker)
+	if !ok {
+		return 0
+	}
+
+	digits, _, _ := strings.Cut(rest, "-")
+
+	seq, err := strconv.ParseUint(digits, 10, 64)
+	if err != nil {
+		return 0
+	}
+
+	return seq
+}
+
+// observe returns a clone of stored with its settle window overlaid on State.
+func (m *Mock) observe(key string, stored *mkdriver.Cluster) mkdriver.Cluster {
+	out := cloneCluster(stored)
+	out.State = m.creating.State(key, m.opts.Clock.Now(), out.State)
+
+	return out
+}
+
+// CreateCluster validates and stores a new cluster (defaulting kafkaVersion and
+// rebalanceConfig.mode as the real API does) and returns the completed LRO. The
+// cluster reports ACTIVE, or CREATING for a settle window under AsyncSettle.
 func (m *Mock) CreateCluster(_ context.Context, c *mkdriver.Cluster) (*mkdriver.Cluster, *mkdriver.Operation, error) {
 	if err := validateClusterID(c.ID); err != nil {
 		return nil, nil, err
 	}
 
-	if err := validateCluster(c); err != nil {
+	stored := cloneCluster(c)
+	applyClusterDefaults(&stored)
+
+	if err := validateCluster(&stored); err != nil {
 		return nil, nil, err
 	}
 
@@ -102,14 +180,14 @@ func (m *Mock) CreateCluster(_ context.Context, c *mkdriver.Cluster) (*mkdriver.
 	}
 
 	now := m.opts.Clock.Now().UTC()
-	stored := cloneCluster(c)
 	stored.State = stateActive
 	stored.CreateTime = now
 	stored.UpdateTime = now
 	m.clusters.Set(key, stored)
+	m.creating.Begin(key, stateCreating, now, m.opts.SettleDuration(settle.DefaultClusterSettle))
 
 	op := m.newOp(c.Project, c.Location, opCreate, key)
-	out := cloneCluster(&stored)
+	out := m.observe(key, &stored)
 
 	return &out, op, nil
 }
@@ -119,12 +197,14 @@ func (m *Mock) GetCluster(_ context.Context, project, location, id string) (*mkd
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	c, ok := m.clusters.Get(clusterName(project, location, id))
+	key := clusterName(project, location, id)
+
+	c, ok := m.clusters.Get(key)
 	if !ok {
 		return nil, clusterNotFound(project, location, id)
 	}
 
-	out := cloneCluster(&c)
+	out := m.observe(key, &c)
 
 	return &out, nil
 }
@@ -139,8 +219,8 @@ func (m *Mock) ListClusters(_ context.Context, project, location string) ([]mkdr
 	out := make([]mkdriver.Cluster, 0, len(all))
 
 	for i := range all {
-		if strings.HasPrefix(clusterName(all[i].Project, all[i].Location, all[i].ID), prefix) {
-			out = append(out, cloneCluster(&all[i]))
+		if key := clusterName(all[i].Project, all[i].Location, all[i].ID); strings.HasPrefix(key, prefix) {
+			out = append(out, m.observe(key, &all[i]))
 		}
 	}
 
@@ -169,6 +249,8 @@ func (m *Mock) UpdateCluster(_ context.Context, c *mkdriver.Cluster, mask []stri
 		return nil, nil, err
 	}
 
+	applyClusterDefaults(&next)
+
 	if err := validateCluster(&next); err != nil {
 		return nil, nil, err
 	}
@@ -177,7 +259,7 @@ func (m *Mock) UpdateCluster(_ context.Context, c *mkdriver.Cluster, mask []stri
 	m.clusters.Set(key, next)
 
 	op := m.newOp(c.Project, c.Location, opUpdate, key)
-	out := cloneCluster(&next)
+	out := m.observe(key, &next)
 
 	return &out, op, nil
 }
@@ -194,6 +276,7 @@ func (m *Mock) DeleteCluster(_ context.Context, project, location, id string) (*
 	}
 
 	m.clusters.Delete(key)
+	m.creating.Clear(key)
 
 	prefix := key + "/" + topicsColl + "/"
 	for _, k := range m.topics.Keys() {
@@ -205,17 +288,15 @@ func (m *Mock) DeleteCluster(_ context.Context, project, location, id string) (*
 	return m.newOp(project, location, opDelete, key), nil
 }
 
-// GetOperation returns a (done) long-running operation by name. An unknown name
-// is reported as a done operation: the mock completes synchronously, so any op
-// id a standalone poll asks for has already finished. In an assembled server
-// the shared LRO poller answers polls instead, and 404s unknown names.
+// GetOperation returns a long-running operation this mock created, by name. An
+// unknown (never created, or evicted) name is NOT_FOUND, as in the real API.
 func (m *Mock) GetOperation(_ context.Context, name string) (*mkdriver.Operation, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	op, ok := m.operations.Get(name)
 	if !ok {
-		return &mkdriver.Operation{Name: name, Done: true}, nil
+		return nil, cerrors.Newf(cerrors.NotFound, "operation %q not found", name)
 	}
 
 	return &op, nil

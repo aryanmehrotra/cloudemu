@@ -43,9 +43,24 @@ type Cluster struct {
 	// KmsKey is gcpConfig.kmsKey (immutable after create).
 	KmsKey string
 
-	// RebalanceMode is rebalanceConfig.mode; empty when no rebalanceConfig was
-	// supplied.
+	// RebalanceMode is rebalanceConfig.mode. The provider defaults an unset
+	// mode to NO_REBALANCE, as the real API does.
 	RebalanceMode string
+
+	// KafkaVersion is the Apache Kafka version (e.g. "3.7.x"). Optional on
+	// create; the provider defaults it to "3.7.x", as the real API does.
+	KafkaVersion string
+
+	// TLS is tlsConfig; nil when the cluster has no TLS configuration.
+	TLS *TLSConfig
+
+	// AllowBrokerDownscaleOnClusterUpscale is
+	// updateOptions.allowBrokerDownscaleOnClusterUpscale.
+	AllowBrokerDownscaleOnClusterUpscale bool
+
+	// BrokerDiskSizeGib is brokerCapacityConfig.diskSizeGib (per-broker disk,
+	// minimum 100 GiB); 0 when no brokerCapacityConfig was supplied.
+	BrokerDiskSizeGib int64
 
 	Labels map[string]string
 
@@ -68,13 +83,26 @@ type Topic struct {
 	Configs           map[string]string
 }
 
+// TLSConfig is the cluster's tlsConfig block.
+type TLSConfig struct {
+	// SSLPrincipalMappingRules is tlsConfig.sslPrincipalMappingRules.
+	SSLPrincipalMappingRules string
+	// CAPools are tlsConfig.trustConfig.casConfigs[].caPool, in order.
+	CAPools []string
+}
+
 // Operation is a completed long-running operation. Every CloudEmu mutation
-// finishes synchronously, so Done is always true.
+// finishes synchronously, so Done is always true. CreateTime, EndTime,
+// TargetName, Type and APIVersion render as the operation's
+// google.cloud.managedkafka.v1.OperationMetadata.
 type Operation struct {
 	Name       string // projects/{p}/locations/{region}/operations/{op}
 	Done       bool
 	TargetName string // the cluster the operation acted on
-	Type       string // create | update | delete
+	Type       string // create | update | delete (OperationMetadata.verb)
+	APIVersion string // OperationMetadata.apiVersion ("v1")
+	CreateTime time.Time
+	EndTime    time.Time
 }
 
 // ManagedKafka is the control-plane interface a provider implements.
@@ -96,7 +124,7 @@ type ManagedKafka interface {
 	UpdateTopic(ctx context.Context, t *Topic, mask []string) (*Topic, error)
 	DeleteTopic(ctx context.Context, project, location, clusterID, id string) error
 
-	// GetOperation resolves a (done) long-running operation by name, for a
-	// standalone package server's own operations poll.
+	// GetOperation returns an operation this driver created; unknown is NOT_FOUND.
+	// The store is bounded, so a very old (evicted) name is NOT_FOUND too.
 	GetOperation(ctx context.Context, name string) (*Operation, error)
 }

@@ -21,14 +21,32 @@ const (
 )
 
 // createCluster handles POST .../clusters?clusterId=. Validation (clusterId
-// format, capacity, network configs) lives in the driver; a failure is 400.
+// format, capacity, network configs) lives in the driver; a failure is 400. In
+// an assembled server an id already used on the shared clusters path by the
+// other service is 409 ALREADY_EXISTS, in either direction: a Kafka create
+// naming a GKE/AlloyDB cluster's id, or a GKE/AlloyDB create (claimed only for
+// this) naming a Kafka cluster's id.
 func (h *Handler) createCluster(w http.ResponseWriter, r *http.Request, rt *route) {
+	id := r.URL.Query().Get(clusterIDParam)
+
+	if h.poller == nil {
+		if probe := probeBody(r); !isKafkaBody(probe) {
+			writeIDTaken(w, rt, foreignCreateID(r, probe), "a Managed Kafka")
+			return
+		}
+
+		if h.siblingOwns(r.Context(), rt, id) {
+			writeIDTaken(w, rt, id, "another service's (GKE or AlloyDB)")
+			return
+		}
+	}
+
 	var body clusterJSON
-	if !decodeBody(w, r, &body) {
+	if !gcprest.DecodeOptionalJSON(w, r, &body) {
 		return
 	}
 
-	c, op, err := h.db.CreateCluster(r.Context(), toDriverCluster(&body, rt, r.URL.Query().Get(clusterIDParam)))
+	c, op, err := h.db.CreateCluster(r.Context(), toDriverCluster(&body, rt, id))
 	if err != nil {
 		gcprest.WriteCErr(w, err)
 		return
@@ -78,7 +96,7 @@ func (h *Handler) listClusters(w http.ResponseWriter, r *http.Request, rt *route
 // change; unknown, immutable and output-only paths are 400.
 func (h *Handler) updateCluster(w http.ResponseWriter, r *http.Request, rt *route) {
 	var body clusterJSON
-	if !decodeBody(w, r, &body) {
+	if !gcprest.DecodeOptionalJSON(w, r, &body) {
 		return
 	}
 
@@ -106,7 +124,7 @@ func (h *Handler) deleteCluster(w http.ResponseWriter, r *http.Request, rt *rout
 // createTopic handles POST .../topics?topicId=; synchronous, returns the Topic.
 func (h *Handler) createTopic(w http.ResponseWriter, r *http.Request, rt *route) {
 	var body topicJSON
-	if !decodeBody(w, r, &body) {
+	if !gcprest.DecodeOptionalJSON(w, r, &body) {
 		return
 	}
 
@@ -159,7 +177,7 @@ func (h *Handler) listTopics(w http.ResponseWriter, r *http.Request, rt *route) 
 // updateTopic handles PATCH .../topics/{t}?updateMask=; synchronous.
 func (h *Handler) updateTopic(w http.ResponseWriter, r *http.Request, rt *route) {
 	var body topicJSON
-	if !decodeBody(w, r, &body) {
+	if !gcprest.DecodeOptionalJSON(w, r, &body) {
 		return
 	}
 
@@ -183,21 +201,14 @@ func (h *Handler) deleteTopic(w http.ResponseWriter, r *http.Request, rt *route)
 	gcprest.WriteJSON(w, http.StatusOK, map[string]any{})
 }
 
-// serveOperation resolves a (done) operation poll for a standalone package
-// server (no shared registry).
-func (h *Handler) serveOperation(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeMethodNotAllowed(w)
-		return
-	}
-
-	op, err := h.db.GetOperation(r.Context(), strings.TrimPrefix(r.URL.Path, "/v1/"))
-	if err != nil {
-		gcprest.WriteCErr(w, err)
-		return
-	}
-
-	gcprest.WriteJSON(w, http.StatusOK, operationJSON{Name: op.Name, Done: true})
+// writeIDTaken writes the 409 for a cluster id another service already uses
+// on the shared clusters path. Real GCP keeps GKE, AlloyDB and Managed Kafka
+// apart by hostname; the emulator serves them on one path, so it refuses the
+// second cluster rather than making one of the two unreachable.
+func writeIDTaken(w http.ResponseWriter, rt *route, id, owner string) {
+	gcprest.WriteError(w, http.StatusConflict, "alreadyExists",
+		"cluster "+clusterName(rt.project, rt.location, id)+" already exists: the id is used by "+owner+
+			" cluster on this emulator, which serves GKE, AlloyDB and Managed Kafka clusters on one path")
 }
 
 // parseMask splits a comma-separated updateMask query param into field paths.

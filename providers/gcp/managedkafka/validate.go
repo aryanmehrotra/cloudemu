@@ -24,6 +24,12 @@ const (
 	minNetworkConfigs = 1
 	maxNetworkConfigs = 10
 
+	// maxCAPools is the trustConfig.casConfigs limit.
+	maxCAPools = 10
+
+	// minBrokerDiskGib is brokerCapacityConfig.diskSizeGib's documented minimum.
+	minBrokerDiskGib = 100
+
 	// maxTopicIDLen is Apache Kafka's own topic-name length limit.
 	maxTopicIDLen = 249
 
@@ -33,7 +39,12 @@ const (
 	pathRebalance = "rebalanceConfig"
 	pathLabels    = "labels"
 	pathName      = "name"
+	pathVersion   = "kafkaVersion"
+	pathTLS       = "tlsConfig"
+	pathUpdateOps = "updateOptions"
+	pathBroker    = "brokerCapacityConfig"
 
+	rebalanceUnspecified = "MODE_UNSPECIFIED"
 	rebalanceNone        = "NO_REBALANCE"
 	rebalanceOnScaleUp   = "AUTO_REBALANCE_ON_SCALE_UP"
 	subnetPathSegments   = 6 // projects/{p}/regions/{r}/subnetworks/{s}
@@ -48,7 +59,24 @@ var (
 
 	// topicIDPattern is Apache Kafka's legal topic-name alphabet.
 	topicIDPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
+	// caPoolPattern is a CA Service pool name; it need not share the cluster's
+	// project or location.
+	caPoolPattern = regexp.MustCompile(`^projects/[^/]+/locations/[^/]+/caPools/[^/]+$`)
 )
+
+// applyClusterDefaults fills the fields the real API defaults when a create (or
+// a masked update) leaves them unset: rebalanceConfig.mode NO_REBALANCE and
+// kafkaVersion 3.7.x.
+func applyClusterDefaults(c *mkdriver.Cluster) {
+	if c.RebalanceMode == "" || c.RebalanceMode == rebalanceUnspecified {
+		c.RebalanceMode = rebalanceNone
+	}
+
+	if c.KafkaVersion == "" {
+		c.KafkaVersion = defaultKafkaVersion
+	}
+}
 
 // validateClusterID enforces the clusterId format.
 func validateClusterID(id string) error {
@@ -77,23 +105,55 @@ func validateTopicID(id string) error {
 	return nil
 }
 
-// validateCluster checks the required cluster configuration: capacity, network
-// access, and the rebalance mode enum.
+// validateCluster checks the cluster configuration: capacity, network access
+// (subnets in the cluster's region), the rebalance mode enum, TLS trust config
+// and per-broker disk.
 func validateCluster(c *mkdriver.Cluster) error {
 	if err := validateCapacity(c.VcpuCount, c.MemoryBytes); err != nil {
 		return err
 	}
 
-	if err := validateSubnets(c.Subnets); err != nil {
+	if err := validateSubnets(c.Subnets, c.Location); err != nil {
 		return err
 	}
 
+	if err := validateTLS(c.TLS); err != nil {
+		return err
+	}
+
+	if c.BrokerDiskSizeGib != 0 && c.BrokerDiskSizeGib < minBrokerDiskGib {
+		return cerrors.Newf(cerrors.InvalidArgument,
+			"broker_capacity_config.disk_size_gib must be at least %d, got %d", minBrokerDiskGib, c.BrokerDiskSizeGib)
+	}
+
 	switch c.RebalanceMode {
-	case "", rebalanceNone, rebalanceOnScaleUp:
+	case rebalanceNone, rebalanceOnScaleUp:
 		return nil
 	default:
 		return cerrors.Newf(cerrors.InvalidArgument, "rebalance_config.mode %q is not a valid mode", c.RebalanceMode)
 	}
+}
+
+// validateTLS requires at most maxCAPools trust-config CA pools, each a CA
+// Service pool name.
+func validateTLS(tls *mkdriver.TLSConfig) error {
+	if tls == nil {
+		return nil
+	}
+
+	if len(tls.CAPools) > maxCAPools {
+		return cerrors.Newf(cerrors.InvalidArgument,
+			"tls_config.trust_config.cas_configs must contain at most %d entries, got %d", maxCAPools, len(tls.CAPools))
+	}
+
+	for _, p := range tls.CAPools {
+		if !caPoolPattern.MatchString(p) {
+			return cerrors.Newf(cerrors.InvalidArgument,
+				"cas_configs.ca_pool %q must be projects/{project}/locations/{location}/caPools/{ca_pool}", p)
+		}
+	}
+
+	return nil
 }
 
 // validateCapacity enforces vcpuCount >= 3 and 1 GiB..8 GiB of memory per vCPU
@@ -118,8 +178,9 @@ func validateCapacity(vcpu, memory int64) error {
 }
 
 // validateSubnets requires 1..10 network configs, each naming a subnet as
-// projects/{project}/regions/{region}/subnetworks/{subnet}.
-func validateSubnets(subnets []string) error {
+// projects/{project}/regions/{region}/subnetworks/{subnet} in the cluster's
+// region (the project may differ), as the real API requires.
+func validateSubnets(subnets []string, location string) error {
 	if len(subnets) < minNetworkConfigs || len(subnets) > maxNetworkConfigs {
 		return cerrors.Newf(cerrors.InvalidArgument,
 			"gcp_config.access_config.network_configs must contain %d to %d entries, got %d",
@@ -130,6 +191,11 @@ func validateSubnets(subnets []string) error {
 		if !validSubnet(s) {
 			return cerrors.Newf(cerrors.InvalidArgument,
 				"network_configs.subnet %q must be projects/{project}/regions/{region}/subnetworks/{subnet}", s)
+		}
+
+		if region := strings.Split(s, "/")[subnetRegionsIdx+1]; region != location {
+			return cerrors.Newf(cerrors.InvalidArgument,
+				"network_configs.subnet %q is in region %q; it must be in the cluster's region %q", s, region, location)
 		}
 	}
 
@@ -181,6 +247,51 @@ var clusterMaskAppliers = map[string]func(dst, src *mkdriver.Cluster){
 	pathRebalance:                           func(dst, src *mkdriver.Cluster) { dst.RebalanceMode = src.RebalanceMode },
 	"rebalanceConfig.mode":                  func(dst, src *mkdriver.Cluster) { dst.RebalanceMode = src.RebalanceMode },
 	pathLabels:                              func(dst, src *mkdriver.Cluster) { dst.Labels = cloneStringMap(src.Labels) },
+	pathVersion:                             func(dst, src *mkdriver.Cluster) { dst.KafkaVersion = src.KafkaVersion },
+	pathTLS:                                 func(dst, src *mkdriver.Cluster) { dst.TLS = cloneTLS(src.TLS) },
+	"tlsConfig.sslPrincipalMappingRules":    copyPrincipalRules,
+	"tlsConfig.trustConfig":                 copyCAPools,
+	"tlsConfig.trustConfig.casConfigs":      copyCAPools,
+	pathUpdateOps:                           copyUpdateOptions,
+	"updateOptions.allowBrokerDownscaleOnClusterUpscale": copyUpdateOptions,
+	pathBroker:                         func(dst, src *mkdriver.Cluster) { dst.BrokerDiskSizeGib = src.BrokerDiskSizeGib },
+	"brokerCapacityConfig.diskSizeGib": func(dst, src *mkdriver.Cluster) { dst.BrokerDiskSizeGib = src.BrokerDiskSizeGib },
+}
+
+func copyUpdateOptions(dst, src *mkdriver.Cluster) {
+	dst.AllowBrokerDownscaleOnClusterUpscale = src.AllowBrokerDownscaleOnClusterUpscale
+}
+
+// copyPrincipalRules sets tlsConfig.sslPrincipalMappingRules, creating the TLS
+// block if the cluster had none.
+func copyPrincipalRules(dst, src *mkdriver.Cluster) {
+	rules := ""
+	if src.TLS != nil {
+		rules = src.TLS.SSLPrincipalMappingRules
+	}
+
+	dst.TLS = ensureTLS(dst.TLS)
+	dst.TLS.SSLPrincipalMappingRules = rules
+}
+
+// copyCAPools sets tlsConfig.trustConfig.casConfigs, creating the TLS block if
+// the cluster had none.
+func copyCAPools(dst, src *mkdriver.Cluster) {
+	var pools []string
+	if src.TLS != nil {
+		pools = append([]string(nil), src.TLS.CAPools...)
+	}
+
+	dst.TLS = ensureTLS(dst.TLS)
+	dst.TLS.CAPools = pools
+}
+
+func ensureTLS(t *mkdriver.TLSConfig) *mkdriver.TLSConfig {
+	if t == nil {
+		return &mkdriver.TLSConfig{}
+	}
+
+	return t
 }
 
 // clusterFixedPaths are cluster field-mask paths that exist on the resource but
@@ -190,7 +301,7 @@ var clusterMaskAppliers = map[string]func(dst, src *mkdriver.Cluster){
 var clusterFixedPaths = map[string]bool{
 	pathName: true, "state": true, "createTime": true, "updateTime": true,
 	"satisfiesPzi": true, "satisfiesPzs": true, "gcpConfig.kmsKey": true,
-	"brokerDetails": true, "kafkaVersion": true,
+	"brokerDetails": true,
 }
 
 func copySubnets(dst, src *mkdriver.Cluster) { dst.Subnets = append([]string(nil), src.Subnets...) }
@@ -234,7 +345,7 @@ func applyAllCluster(dst, src *mkdriver.Cluster, path string) {
 		return
 	}
 
-	for _, p := range []string{pathCapacity, pathRebalance, pathLabels} {
+	for _, p := range []string{pathCapacity, pathRebalance, pathLabels, pathVersion, pathTLS, pathUpdateOps, pathBroker} {
 		clusterMaskAppliers[p](dst, src)
 	}
 }

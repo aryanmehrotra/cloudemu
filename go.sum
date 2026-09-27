@@ -26,6 +26,8 @@ cloud.google.com/go/logging v1.13.2 h1:qqlHCBvieJT9Cdq4QqYx1KPadCQ2noD4FK02eNqHA
 cloud.google.com/go/logging v1.13.2/go.mod h1:zaybliM3yun1J8mU2dVQ1/qDzjbOqEijZCn6hSBtKak=
 cloud.google.com/go/longrunning v1.2.0 h1:WjYH3YHBGCxGJP9M4dWGHBfXr/cFIjMkNgWcJj7/iMM=
 cloud.google.com/go/longrunning v1.2.0/go.mod h1:5KMQALFGOCtFoi2xSOA1u3H7WKlhmckgiyFw7+LGQp0=
+cloud.google.com/go/managedkafka v1.0.0 h1:wKZdHCPUr3mQDo/9sbPI2+vhXXw9AgC9EfSsZnxbUvY=
+cloud.google.com/go/managedkafka v1.0.0/go.mod h1:Phh9R6RQhGCNq36Uifsi+HHFIOlRFUE8Z3Xl2fYelBo=
 cloud.google.com/go/monitoring v1.27.0 h1:BhYwMqao+e5Nn7JtWMM9m6zRtKtVUK6kJWMizXChkLU=
 cloud.google.com/go/monitoring v1.27.0/go.mod h1:72NOVjJXHY/HBfoLT0+qlCZBT059+9VXLeAnL2PeeVM=
 cloud.google.com/go/secretmanager v1.16.0 h1:19QT7ZsLJ8FSP1k+4esQvuCD7npMJml6hYzilxVyT+k=

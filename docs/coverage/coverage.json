@@ -10202,7 +10202,7 @@
       },
       {
         "name": "GetOperation",
-        "doc": "GetOperation resolves a (done) long-running operation by name, for a"
+        "doc": "GetOperation returns an operation this driver created; unknown is NOT_FOUND."
       },
       {
         "name": "GetTopic"

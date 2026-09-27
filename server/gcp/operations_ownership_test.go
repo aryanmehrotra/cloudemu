@@ -195,6 +195,101 @@ func TestFullServerManagedKafkaSharesClustersWithGKE(t *testing.T) {
 	if code, _ := do(t, ts, http.MethodGet, "/v1/projects/demo/locations/us-central1/operations/nope", ""); code != http.StatusNotFound {
 		t.Fatalf("bogus op GET: code=%d, want 404", code)
 	}
+
+	// AFTER a Kafka create, the shared-location list is still GKE's: gke1 is
+	// listed and the Kafka cluster does not replace it.
+	if code, body := do(t, ts, http.MethodGet, base, ""); code != http.StatusOK ||
+		!strings.Contains(body, "gke1") || strings.Contains(body, "kafka1") {
+		t.Fatalf("GKE list after Kafka create: code=%d body=%s (want gke1, not kafka1)", code, body)
+	}
+
+	// In a location where GKE owns nothing, the list is Kafka's.
+	const west = "/v1/projects/demo/locations/europe-west1/clusters"
+
+	westBody := strings.ReplaceAll(kafkaBody, "us-central1", "europe-west1")
+	if code, body := do(t, ts, http.MethodPost, west+"?clusterId=kafka2", westBody); code != http.StatusOK {
+		t.Fatalf("Kafka create in europe-west1: code=%d body=%s", code, body)
+	}
+
+	if code, body := do(t, ts, http.MethodGet, west, ""); code != http.StatusOK || !strings.Contains(body, "clusters/kafka2") {
+		t.Fatalf("Kafka list where GKE owns none: code=%d body=%s", code, body)
+	}
+
+	// A Kafka create reusing a GKE cluster's id in that location is refused, and
+	// the GKE cluster stays reachable; so is a GKE create reusing a Kafka id.
+	if code, body := do(t, ts, http.MethodPost, base+"?clusterId=gke1", kafkaBody); code != http.StatusConflict ||
+		!strings.Contains(body, "ALREADY_EXISTS") {
+		t.Fatalf("Kafka create over GKE id: code=%d body=%s (want 409 ALREADY_EXISTS)", code, body)
+	}
+
+	if code, body := do(t, ts, http.MethodPost, base, `{"cluster":{"name":"kafka1","initialNodeCount":1}}`); code != http.StatusConflict {
+		t.Fatalf("GKE create over Kafka id: code=%d body=%s (want 409)", code, body)
+	}
+
+	if code, body := do(t, ts, http.MethodGet, base+"/gke1", ""); code != http.StatusOK || strings.Contains(body, "capacityConfig") {
+		t.Fatalf("GKE get after refused Kafka create: code=%d body=%s", code, body)
+	}
+
+	// A Kafka-shaped PATCH for a Kafka cluster that no longer exists is Kafka's
+	// 404, not GKE's 405.
+	if code, body := do(t, ts, http.MethodDelete, base+"/kafka1", ""); code != http.StatusOK {
+		t.Fatalf("Kafka delete: code=%d body=%s", code, body)
+	}
+
+	for _, body := range []string{`{"labels":{"a":"b"}}`, `{"capacityConfig":{"vcpuCount":"4"}}`} {
+		code, got := do(t, ts, http.MethodPatch, base+"/kafka1?updateMask=labels", body)
+		if code != http.StatusNotFound || !strings.Contains(got, "NOT_FOUND") {
+			t.Fatalf("PATCH missing Kafka cluster %s: code=%d body=%s (want 404 NOT_FOUND)", body, code, got)
+		}
+	}
+}
+
+// TestFullServerManagedKafkaSharesClustersWithAlloyDB is the AlloyDB variant:
+// AlloyDB's list survives a Kafka create, and neither service can take an id
+// the other already uses.
+func TestFullServerManagedKafkaSharesClustersWithAlloyDB(t *testing.T) {
+	ts := httptest.NewServer(gcpserver.New(gcpserver.DriversFromWithAlloyDB(cloudemu.NewGCP())))
+	t.Cleanup(ts.Close)
+
+	const base = "/v1/projects/demo/locations/us-central1/clusters"
+
+	if code, body := do(t, ts, http.MethodPost, base+"?clusterId=adb1", `{"network":"n"}`); code != http.StatusOK {
+		t.Fatalf("AlloyDB create: code=%d body=%s", code, body)
+	}
+
+	kafkaBody := `{"capacityConfig":{"vcpuCount":"3","memoryBytes":"3221225472"},` +
+		`"gcpConfig":{"accessConfig":{"networkConfigs":[{"subnet":"projects/demo/regions/us-central1/subnetworks/s"}]}}}`
+
+	if code, body := do(t, ts, http.MethodPost, base+"?clusterId=kafka1", kafkaBody); code != http.StatusOK {
+		t.Fatalf("Kafka create: code=%d body=%s", code, body)
+	}
+
+	if code, body := do(t, ts, http.MethodGet, base, ""); code != http.StatusOK ||
+		!strings.Contains(body, "adb1") || strings.Contains(body, "kafka1") {
+		t.Fatalf("AlloyDB list after Kafka create: code=%d body=%s (want adb1, not kafka1)", code, body)
+	}
+
+	if code, body := do(t, ts, http.MethodGet, base+"/kafka1", ""); code != http.StatusOK || !strings.Contains(body, "capacityConfig") {
+		t.Fatalf("Kafka get: code=%d body=%s", code, body)
+	}
+
+	if code, body := do(t, ts, http.MethodGet, base+"/adb1", ""); code != http.StatusOK || strings.Contains(body, "capacityConfig") {
+		t.Fatalf("AlloyDB get: code=%d body=%s", code, body)
+	}
+
+	if code, body := do(t, ts, http.MethodPost, base+"?clusterId=adb1", kafkaBody); code != http.StatusConflict {
+		t.Fatalf("Kafka create over AlloyDB id: code=%d body=%s (want 409)", code, body)
+	}
+
+	if code, body := do(t, ts, http.MethodPost, base+"?clusterId=kafka1", `{"network":"n"}`); code != http.StatusConflict {
+		t.Fatalf("AlloyDB create over Kafka id: code=%d body=%s (want 409)", code, body)
+	}
+
+	// An AlloyDB labels PATCH on its own cluster still reaches AlloyDB.
+	if code, body := do(t, ts, http.MethodPatch, base+"/adb1?updateMask=labels", `{"labels":{"a":"b"}}`); code != http.StatusOK ||
+		strings.Contains(body, "capacityConfig") {
+		t.Fatalf("AlloyDB PATCH own cluster: code=%d body=%s", code, body)
+	}
 }
 
 // TestFullServerBackupDROperationsResolveThroughSharedPoller proves a Backup and

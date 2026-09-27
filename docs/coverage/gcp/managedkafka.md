@@ -12,7 +12,7 @@ GCP's `managedkafka` service · portable interface `driver.ManagedKafka` · [GCP
 | `DeleteCluster` | DeleteCluster removes the cluster and every topic under it. |
 | `DeleteTopic` |  |
 | `GetCluster` |  |
-| `GetOperation` | GetOperation resolves a (done) long-running operation by name, for a |
+| `GetOperation` | GetOperation returns an operation this driver created; unknown is NOT_FOUND. |
 | `GetTopic` |  |
 | `ListClusters` |  |
 | `ListTopics` |  |

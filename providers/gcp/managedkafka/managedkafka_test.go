@@ -93,7 +93,7 @@ func TestClusterValidation(t *testing.T) {
 		"bad subnet shape": func(c *mkdriver.Cluster) { c.Subnets = []string{"projects/p/zones/z/subnetworks/s"} },
 		"bad id":           func(c *mkdriver.Cluster) { c.ID = "9starts-with-digit" },
 		"empty id":         func(c *mkdriver.Cluster) { c.ID = "" },
-		"bad mode":         func(c *mkdriver.Cluster) { c.RebalanceMode = "MODE_UNSPECIFIED" },
+		"bad mode":         func(c *mkdriver.Cluster) { c.RebalanceMode = "REBALANCE_SOMETIMES" },
 	}
 
 	for name, mutate := range cases {
@@ -126,7 +126,7 @@ func TestClusterMask(t *testing.T) {
 	}
 
 	if op.Type != opUpdate || got.VcpuCount != 4 || got.MemoryBytes != 32*gib || len(got.Subnets) != 2 ||
-		got.RebalanceMode != "" || got.Labels["a"] != "b" || got.KmsKey != "k1" {
+		got.RebalanceMode != rebalanceNone || got.Labels["a"] != "b" || got.KmsKey != "k1" {
 		t.Fatalf("masked update = %+v", got)
 	}
 
