@@ -37,6 +37,13 @@ type ClusterState struct {
 	// value field guarded by mu (snapshot-friendly for #868).
 	rv uint64
 
+	// watchFloor is the resourceVersion the watch history starts at: 0 for a
+	// fresh cluster (so a watch from a bootstrap object's own RV is valid), or
+	// the restored RV after a snapshot restore. A watch resuming from an RV
+	// below it gets a 410 Expired ERROR event, the "too old resource version"
+	// signal client-go reflectors relist on.
+	watchFloor uint64
+
 	// clock sources every timestamp the data plane stamps (creationTimestamp,
 	// pod start/condition times). A FakeClock makes all of them deterministic;
 	// defaults to config.RealClock.
