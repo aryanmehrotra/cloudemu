@@ -102,4 +102,14 @@ func TestSDKAddressLabelsSurviveSnapshotRestore(t *testing.T) {
 	if next.Address == after.Address {
 		t.Errorf("new address got IP %s, already held by the restored address", next.Address)
 	}
+
+	if _, err := restored.GlobalAddresses.Delete(testProject, "next-range").Context(ctx).Do(); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	_, err = restored.GlobalAddresses.Get(testProject, "next-range").Context(ctx).Do()
+	wantStatus(t, "Get after Delete", err, 404)
+
+	_, err = restored.GlobalAddresses.Delete(testProject, "next-range").Context(ctx).Do()
+	wantStatus(t, "Delete twice", err, 404)
 }
