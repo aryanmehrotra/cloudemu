@@ -114,6 +114,9 @@ const (
 	// ServiceAPIManagement buckets Azure API Management resources
 	// (Microsoft.ApiManagement/service).
 	ServiceAPIManagement = "apimanagement"
+	// ServiceLogic buckets Azure Logic Apps resources
+	// (Microsoft.Logic/workflows).
+	ServiceLogic = "logic"
 )
 
 // Resource type constants emitted by the walkers.
@@ -273,6 +276,10 @@ const TypeIoTHub = "IotHub"
 // service (Microsoft.ApiManagement/service). Azure-only, so it lives in its own
 // line.
 const TypeAPIManagementService = "Service"
+
+// TypeLogicWorkflow is the portable type for an Azure Logic Apps (Consumption)
+// workflow (Microsoft.Logic/workflows). Azure-only, so it lives in its own line.
+const TypeLogicWorkflow = "Workflow"
 
 // sqlVMOptInTagKey and sqlVMOptInTagValue mark a compute VM as opting in to a
 // paired Microsoft.SqlVirtualMachine overlay row in discovery. Only Azure VMs

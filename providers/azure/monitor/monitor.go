@@ -56,6 +56,26 @@ type alarmData struct {
 	// LastEvaluatedAt is when the alarm was last evaluated or had its state
 	// set. The next lazy evaluation is due one EvaluationInterval later.
 	LastEvaluatedAt time.Time
+	// Criteria is set on an alert with more than one allOf criterion. Each is
+	// evaluated on its own and the alert fires only when all are breached.
+	Criteria []alarmCriterion
+
+	// EvaluateLowSampleCountPercentile and EvaluationWindow are stored so the
+	// portable API round-trips them. They do not change evaluation here.
+	EvaluateLowSampleCountPercentile string
+	EvaluationWindow                 *driver.EvaluationWindow
+}
+
+// alarmCriterion is one metric condition of a multi-criteria alert. State is
+// the criterion's last evaluated state.
+type alarmCriterion struct {
+	Namespace          string
+	MetricName         string
+	Dimensions         map[string]string
+	ComparisonOperator string
+	Threshold          float64
+	Stat               string
+	State              string
 }
 
 // Mock is an in-memory mock implementation of the Azure Monitor service.
@@ -300,13 +320,53 @@ func (m *Mock) ListMetrics(_ context.Context, namespace string) ([]string, error
 //
 //nolint:gocritic // hugeParam: interface method signature cannot be changed.
 func (m *Mock) CreateAlarm(_ context.Context, cfg driver.AlarmConfig) error {
-	if cfg.Name == "" {
-		return cerrors.New(cerrors.InvalidArgument, "alarm name is required")
+	return m.createAlarm(&cfg, nil)
+}
+
+// CreateAlarmAllOf creates or replaces an alert with several criteria, as a
+// metric alert with more than one allOf entry. The first config names the
+// alert and carries its actions and window. Microsoft Learn ("Types of Azure
+// Monitor alerts") says the rule "fires an alert when all conditions are met"
+// and resolves when at least one is no longer true.
+func (m *Mock) CreateAlarmAllOf(_ context.Context, cfgs []driver.AlarmConfig) error {
+	if len(cfgs) == 0 {
+		return cerrors.New(cerrors.InvalidArgument, "at least one criterion is required")
 	}
 
-	dims := make(map[string]string, len(cfg.Dimensions))
-	for k, v := range cfg.Dimensions {
-		dims[k] = v
+	if len(cfgs) == 1 {
+		return m.createAlarm(&cfgs[0], nil)
+	}
+
+	criteria := make([]alarmCriterion, 0, len(cfgs))
+
+	for i := range cfgs {
+		c := &cfgs[i]
+		criteria = append(criteria, alarmCriterion{
+			Namespace:          c.Namespace,
+			MetricName:         c.MetricName,
+			Dimensions:         copyStringMap(c.Dimensions),
+			ComparisonOperator: c.ComparisonOperator,
+			Threshold:          c.Threshold,
+			Stat:               c.Stat,
+			State:              alarmeval.StateInsufficientData,
+		})
+	}
+
+	return m.createAlarm(&cfgs[0], criteria)
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+
+	return out
+}
+
+func (m *Mock) createAlarm(cfg *driver.AlarmConfig, criteria []alarmCriterion) error {
+	if cfg.Name == "" {
+		return cerrors.New(cerrors.InvalidArgument, "alarm name is required")
 	}
 
 	now := m.opts.Clock.Now()
@@ -315,7 +375,7 @@ func (m *Mock) CreateAlarm(_ context.Context, cfg driver.AlarmConfig) error {
 		Name:                       cfg.Name,
 		Namespace:                  cfg.Namespace,
 		MetricName:                 cfg.MetricName,
-		Dimensions:                 dims,
+		Dimensions:                 copyStringMap(cfg.Dimensions),
 		ComparisonOperator:         cfg.ComparisonOperator,
 		Threshold:                  cfg.Threshold,
 		Period:                     cfg.Period,
@@ -331,6 +391,10 @@ func (m *Mock) CreateAlarm(_ context.Context, cfg driver.AlarmConfig) error {
 		AlarmActions:               append([]string{}, cfg.AlarmActions...),
 		OKActions:                  append([]string{}, cfg.OKActions...),
 		InsufficientDataActions:    append([]string{}, cfg.InsufficientDataActions...),
+		Criteria:                   criteria,
+
+		EvaluateLowSampleCountPercentile: cfg.EvaluateLowSampleCountPercentile,
+		EvaluationWindow:                 copyWindow(cfg.EvaluationWindow),
 	}
 
 	m.alarmMu.Lock()
@@ -659,5 +723,20 @@ func toAlarmInfo(a *alarmData) driver.AlarmInfo {
 		OKActions:                  append([]string{}, a.OKActions...),
 		InsufficientDataActions:    append([]string{}, a.InsufficientDataActions...),
 		Dimensions:                 dims,
+
+		EvaluateLowSampleCountPercentile: a.EvaluateLowSampleCountPercentile,
+		EvaluationWindow:                 copyWindow(a.EvaluationWindow),
 	}
+}
+
+// copyWindow copies an evaluation window so callers cannot change the stored
+// one.
+func copyWindow(w *driver.EvaluationWindow) *driver.EvaluationWindow {
+	if w == nil {
+		return nil
+	}
+
+	c := *w
+
+	return &c
 }

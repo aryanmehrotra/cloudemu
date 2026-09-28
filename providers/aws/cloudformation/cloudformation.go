@@ -30,6 +30,10 @@ type Mock struct {
 	fetchTemplate TemplateFetcher
 	// readParameter reads Parameter Store for SSM parameter types.
 	readParameter ParameterReader
+	// exportMu serializes the export checks of different stacks, so two
+	// stacks cannot claim one export name and an export cannot lose its
+	// last guard while a stack starts importing it.
+	exportMu sync.Mutex
 }
 
 // stackData is the stored state of one stack, guarded by its own mutex.
@@ -46,6 +50,142 @@ type stackData struct {
 	// needs, when that differs from the physical id (SNS/Secrets delete by name
 	// but expose an ARN as the physical id).
 	deleteIDs map[string]string
+	// props maps a logical ID to the resolved properties it was last created
+	// or updated with. The update diff compares new properties against it.
+	props map[string]map[string]any
+	// rollbackFailed lists the resources a failed update rollback could not
+	// restore. It is set only while the stack is UPDATE_ROLLBACK_FAILED.
+	rollbackFailed []string
+	// changeSets holds the stack's change sets in creation order.
+	changeSets []*changeSetRecord
+	// retained holds the old physical resources of replacements made by a
+	// failed update that was not rolled back. The next successful update
+	// deletes them in its cleanup phase, and DeleteStack deletes them.
+	retained []retainedResource
+	// imports lists the export names the stack imports with
+	// Fn::ImportValue. An export in the list cannot be changed or deleted.
+	imports []string
+	// policies maps a logical ID to the DeletionPolicy and
+	// UpdateReplacePolicy it was last applied with.
+	policies map[string]resourcePolicy
+}
+
+// resourcePolicy is the effective DeletionPolicy and UpdateReplacePolicy of
+// a provisioned resource.
+type resourcePolicy struct {
+	Deletion string `json:"deletion,omitempty"`
+	Replace  string `json:"replace,omitempty"`
+}
+
+// policyOf returns the policies CloudFormation applies to rdef.
+func policyOf(rdef *cfn.ResourceDef) resourcePolicy {
+	return resourcePolicy{Deletion: rdef.EffectiveDeletionPolicy(), Replace: rdef.EffectiveReplacePolicy()}
+}
+
+// policy returns the policies a resource was applied with. A resource
+// without a record, such as one restored from an older snapshot, has the
+// defaults.
+func (sd *stackData) policy(id string) resourcePolicy {
+	sd.mu.RLock()
+	defer sd.mu.RUnlock()
+
+	if p, ok := sd.policies[id]; ok {
+		return p
+	}
+
+	return resourcePolicy{Deletion: cfn.PolicyValueDelete, Replace: cfn.PolicyValueDelete}
+}
+
+func (sd *stackData) setPolicy(id string, p resourcePolicy) {
+	sd.mu.Lock()
+	defer sd.mu.Unlock()
+
+	if sd.policies == nil {
+		sd.policies = map[string]resourcePolicy{}
+	}
+
+	sd.policies[id] = p
+}
+
+// retainedResource is the old physical resource of a replacement that is
+// waiting for cleanup.
+type retainedResource struct {
+	LogicalID string               `json:"logicalId"`
+	Type      string               `json:"type"`
+	Resolved  cfn.ResolvedResource `json:"resolved"`
+	Props     map[string]any       `json:"props,omitempty"`
+	DeleteID  string               `json:"deleteId"`
+	// ReplacePolicy is the UpdateReplacePolicy the cleanup applies.
+	ReplacePolicy string `json:"replacePolicy,omitempty"`
+}
+
+func (r *retainedResource) replacement() replacement {
+	return replacement{id: r.LogicalID, policy: r.ReplacePolicy, old: liveResource{
+		typ: r.Type, resolved: r.Resolved, props: r.Props, deleteID: r.DeleteID,
+	}}
+}
+
+// retain records the old resources of replacements a failed update keeps.
+func (sd *stackData) retain(replaced []replacement) {
+	sd.mu.Lock()
+	defer sd.mu.Unlock()
+
+	for i := range replaced {
+		old := &replaced[i].old
+		sd.retained = append(sd.retained, retainedResource{
+			LogicalID: replaced[i].id, Type: old.typ, Resolved: old.resolved, Props: old.props, DeleteID: old.deleteID,
+			ReplacePolicy: replaced[i].policy,
+		})
+	}
+}
+
+// drainRetained forgets the retained old resources and returns the ones to
+// delete. A retained resource whose physical id a live resource of the
+// stack now holds again is dropped, not deleted.
+func (sd *stackData) drainRetained() []replacement {
+	sd.mu.Lock()
+	defer sd.mu.Unlock()
+
+	live := make(map[string]bool, len(sd.resolved))
+	for _, rr := range sd.resolved {
+		live[rr.RefValue] = true
+	}
+
+	var out []replacement
+
+	for i := range sd.retained {
+		if !live[sd.retained[i].Resolved.RefValue] {
+			out = append(out, sd.retained[i].replacement())
+		}
+	}
+
+	sd.retained = nil
+
+	return out
+}
+
+// takeRetained removes and returns the retained old resource of id whose
+// custom name property is name.
+func (sd *stackData) takeRetained(id, rtype, nameProp, name string) (liveResource, bool) {
+	if name == "" {
+		return liveResource{}, false
+	}
+
+	sd.mu.Lock()
+	defer sd.mu.Unlock()
+
+	for i := range sd.retained {
+		r := &sd.retained[i]
+		if r.LogicalID == id && r.Type == rtype && cfn.PropString(r.Props, nameProp) == name {
+			old := r.replacement().old
+
+			sd.retained = append(sd.retained[:i], sd.retained[i+1:]...)
+
+			return old, true
+		}
+	}
+
+	return liveResource{}, false
 }
 
 // New builds a CloudFormation mock with an empty provisioner registry. Callers

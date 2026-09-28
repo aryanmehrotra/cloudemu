@@ -82,7 +82,7 @@ func (h *Handler) deleteVPCEndpoints(w http.ResponseWriter, r *http.Request) {
 	for _, id := range awsquery.ListStrings(r.Form, "VpcEndpointId") {
 		if err := h.vpc.DeleteVPCEndpoint(r.Context(), id); err != nil {
 			item := unsuccessfulItemXML{ResourceID: id}
-			item.Error.Code = "InvalidVpcEndpointId.NotFound"
+			item.Error.Code = codeInvalidVpcEndpointID
 			item.Error.Message = cerrors.Message(err)
 			unsuccessful = append(unsuccessful, item)
 		}
@@ -128,6 +128,26 @@ func (h *Handler) describeVPCEndpoints(w http.ResponseWriter, r *http.Request) {
 // change an endpoint's subnets, route tables, and security groups.
 func (h *Handler) modifyVPCEndpoint(w http.ResponseWriter, r *http.Request) {
 	id := r.Form.Get("VpcEndpointId")
+
+	// A backend that applies the change as a delta does the read-modify-write
+	// under its own lock, so parallel modifies of one endpoint do not race.
+	if sets, ok := h.vpc.(netdriver.VPCEndpointSetModifier); ok {
+		if _, err := sets.ModifyVPCEndpointSets(r.Context(), id, &netdriver.VPCEndpointSetChange{
+			AddRouteTableIDs:       awsquery.ListStrings(r.Form, "AddRouteTableId"),
+			RemoveRouteTableIDs:    awsquery.ListStrings(r.Form, "RemoveRouteTableId"),
+			AddSubnetIDs:           awsquery.ListStrings(r.Form, "AddSubnetId"),
+			RemoveSubnetIDs:        awsquery.ListStrings(r.Form, "RemoveSubnetId"),
+			AddSecurityGroupIDs:    awsquery.ListStrings(r.Form, "AddSecurityGroupId"),
+			RemoveSecurityGroupIDs: awsquery.ListStrings(r.Form, "RemoveSecurityGroupId"),
+		}); err != nil {
+			writeVPCEndpointErr(w, err)
+			return
+		}
+
+		writeReturnTrue(w, "ModifyVpcEndpointResponse")
+
+		return
+	}
 
 	current, err := h.vpc.DescribeVPCEndpoints(r.Context(), []string{id})
 	if err != nil {
@@ -242,5 +262,12 @@ func (h *Handler) toVPCEndpointXML(ctx context.Context, ep *netdriver.VPCEndpoin
 }
 
 func writeVPCEndpointErr(w http.ResponseWriter, err error) {
-	writeErrWithNotFound(w, err, "InvalidVpcEndpointId.NotFound", "DependencyViolation")
+	// The only AlreadyExists an endpoint call raises is a second endpoint route
+	// for the same service in one route table.
+	if cerrors.IsAlreadyExists(err) {
+		awsquery.WriteXMLError(w, http.StatusBadRequest, "RouteAlreadyExists", cerrors.Message(err))
+		return
+	}
+
+	writeErrWithNotFound(w, err, codeInvalidVpcEndpointID, "DependencyViolation")
 }

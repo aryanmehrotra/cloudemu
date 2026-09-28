@@ -8,7 +8,6 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 
-	cerrors "github.com/stackshy/cloudemu/v2/errors"
 	mondriver "github.com/stackshy/cloudemu/v2/services/monitoring/driver"
 )
 
@@ -76,6 +75,8 @@ type datapointCBR struct {
 	Minimum     *float64  `cbor:"Minimum,omitempty"`
 	Maximum     *float64  `cbor:"Maximum,omitempty"`
 	Unit        string    `cbor:"Unit,omitempty"`
+
+	ExtendedStatistics map[string]float64 `cbor:"ExtendedStatistics,omitempty"`
 }
 
 type getMetricStatisticsOutput struct {
@@ -165,6 +166,9 @@ type putMetricAlarmInput struct {
 	Tags                    []tagCBR             `cbor:"Tags,omitempty"`
 	Metrics                 []metricDataQueryCBR `cbor:"Metrics,omitempty"`
 	ThresholdMetricID       string               `cbor:"ThresholdMetricId,omitempty"`
+
+	EvaluateLowSampleCountPercentile string               `cbor:"EvaluateLowSampleCountPercentile,omitempty"`
+	EvaluationWindow                 *evaluationWindowCBR `cbor:"EvaluationWindow,omitempty"`
 }
 
 func (h *Handler) putMetricAlarm(w http.ResponseWriter, r *http.Request, body []byte) {
@@ -196,9 +200,11 @@ func (h *Handler) putMetricAlarm(w http.ResponseWriter, r *http.Request, body []
 		Tags:                    tagsToMap(in.Tags),
 		Metrics:                 toDriverQueries(in.Metrics),
 		ThresholdMetricID:       in.ThresholdMetricID,
+
+		EvaluateLowSampleCountPercentile: in.EvaluateLowSampleCountPercentile,
 	}
 
-	if err := h.putMetricAlarmCore(r.Context(), &cfg, in.Threshold != nil); err != nil {
+	if err := h.putMetricAlarmCore(r.Context(), &cfg, in.Threshold != nil, in.EvaluationWindow.input()); err != nil {
 		writeDriverErr(w, err)
 		return
 	}
@@ -227,6 +233,9 @@ type describeAlarmsInput struct {
 	ActionPrefix    string   `cbor:"ActionPrefix,omitempty"`
 	MaxRecords      int      `cbor:"MaxRecords,omitempty"`
 	NextToken       string   `cbor:"NextToken,omitempty"`
+
+	ChildrenOfAlarmName string `cbor:"ChildrenOfAlarmName,omitempty"`
+	ParentsOfAlarmName  string `cbor:"ParentsOfAlarmName,omitempty"`
 }
 
 // maxAlarmPageSize is the AWS cap on DescribeAlarms MaxRecords, used as the page
@@ -260,6 +269,10 @@ type metricAlarmCBR struct {
 	InsufficientDataActions    []string             `cbor:"InsufficientDataActions,omitempty"`
 	Metrics                    []metricDataQueryCBR `cbor:"Metrics,omitempty"`
 	ThresholdMetricID          string               `cbor:"ThresholdMetricId,omitempty"`
+
+	EvaluateLowSampleCountPercentile   string               `cbor:"EvaluateLowSampleCountPercentile,omitempty"`
+	EvaluationWindow                   *evaluationWindowCBR `cbor:"EvaluationWindow,omitempty"`
+	AlarmConfigurationUpdatedTimestamp *time.Time           `cbor:"AlarmConfigurationUpdatedTimestamp,omitempty"`
 }
 
 type describeAlarmsOutput struct {
@@ -275,61 +288,25 @@ func (h *Handler) describeAlarms(w http.ResponseWriter, r *http.Request, body []
 		return
 	}
 
-	matched := make([]metricAlarmCBR, 0)
-
-	// AlarmTypes selects metric alarms, composite alarms, or (when omitted) both.
-	if wantsAlarmType(in.AlarmTypes, alarmTypeMetric) {
-		alarms, err := h.monitoring.DescribeAlarms(r.Context(), in.AlarmNames)
-		if err != nil {
-			writeDriverErr(w, err)
-			return
-		}
-
-		for i := range alarms {
-			if !alarmMatchesFilters(&alarms[i], &in) {
-				continue
-			}
-
-			matched = append(matched, toMetricAlarmCBR(&alarms[i]))
-		}
-	}
-
-	// Always paginate: real CloudWatch caps a page at 100 alarms and returns a
-	// NextToken for the rest, so an unpaged "return everything" reply would drop
-	// alarms past 100 for callers that don't pass paging inputs.
-	sort.SliceStable(matched, func(i, j int) bool {
-		return matched[i].AlarmName < matched[j].AlarmName
-	})
-
-	size := in.MaxRecords
-	if size <= 0 {
-		size = maxAlarmPageSize
-	}
-
-	offset, err := offsetFromToken(in.NextToken, errInvalidNextToken)
+	page, err := h.describeAlarmsPage(r.Context(), &in)
 	if err != nil {
 		writeDriverErr(w, err)
 		return
 	}
 
-	from, to, next := pageWindow(len(matched), offset, size)
+	if familyQuery(&in) {
+		metric, composite := familyRows(page)
+		writeCBORResponse(w, describeFamilyOutput{MetricAlarms: metric, CompositeAlarms: composite, NextToken: page.next})
 
-	resp := describeAlarmsOutput{MetricAlarms: matched[from:to]}
-	if next > 0 {
-		resp.NextToken = encodeOffsetToken(next)
+		return
 	}
 
-	// Composite alarms are a small, separate collection; return them all on the
-	// first page (offset 0) so they aren't duplicated across metric-alarm pages.
-	if offset == 0 && wantsAlarmType(in.AlarmTypes, alarmTypeComposite) {
-		composites, err := h.compositeAlarmRows(r, &in)
-		if err != nil {
-			writeDriverErr(w, err)
-			return
-		}
-
-		resp.CompositeAlarms = composites
+	resp := describeAlarmsOutput{MetricAlarms: make([]metricAlarmCBR, 0, len(page.metric)), NextToken: page.next}
+	for i := range page.metric {
+		resp.MetricAlarms = append(resp.MetricAlarms, toMetricAlarmCBR(&page.metric[i]))
 	}
+
+	resp.CompositeAlarms = compositeRows(page.composite)
 
 	writeCBORResponse(w, resp)
 }
@@ -391,6 +368,9 @@ func toMetricAlarmCBR(a *mondriver.AlarmInfo) metricAlarmCBR {
 		InsufficientDataActions: a.InsufficientDataActions,
 		Metrics:                 toQueriesCBR(a.Metrics),
 		ThresholdMetricID:       a.ThresholdMetricID,
+
+		EvaluateLowSampleCountPercentile: a.EvaluateLowSampleCountPercentile,
+		EvaluationWindow:                 toEvaluationWindowCBR(a.EvaluationWindow),
 	}
 
 	if !a.StateUpdatedTimestamp.IsZero() {
@@ -402,6 +382,8 @@ func toMetricAlarmCBR(a *mondriver.AlarmInfo) metricAlarmCBR {
 		ts := a.StateTransitionedTimestamp.UTC()
 		m.StateTransitionedTimestamp = &ts
 	}
+
+	m.AlarmConfigurationUpdatedTimestamp = optTime(a.AlarmConfigurationUpdatedTimestamp)
 
 	return m
 }
@@ -438,24 +420,9 @@ func (h *Handler) deleteAlarms(w http.ResponseWriter, r *http.Request, body []by
 		return
 	}
 
-	// AWS tolerates incorrect alarm names: the correctly named alarms are still
-	// deleted and no ResourceNotFound is returned. Skip not-found names so a
-	// batch that includes an already-gone alarm (e.g. terraform destroy) never
-	// fails spuriously or leaves a half-deleted state.
-	for _, name := range in.AlarmNames {
-		if err := h.monitoring.DeleteAlarm(r.Context(), name); err != nil && !cerrors.IsNotFound(err) {
-			writeDriverErr(w, err)
-			return
-		}
-	}
-
-	// DeleteAlarms accepts both metric and composite alarm names in one call; a
-	// name that isn't a metric alarm (tolerated above) may be a composite alarm.
-	if store, ok := h.monitoring.(compositeAlarmStore); ok {
-		if err := store.DeleteCompositeAlarms(r.Context(), in.AlarmNames); err != nil {
-			writeDriverErr(w, err)
-			return
-		}
+	if err := h.deleteAlarmsCore(r.Context(), in.AlarmNames); err != nil {
+		writeDriverErr(w, err)
+		return
 	}
 
 	writeCBORResponse(w, struct{}{})

@@ -145,6 +145,9 @@ type Cluster struct {
 	// A rollback to PreviousVersion is allowed for 7 days after it.
 	PreviousVersion   string
 	VersionUpgradedAt time.Time
+	// CreatorPrincipalArn is the IAM principal of the bootstrap admin entry.
+	// It is kept so a later switch to an API mode can add that entry.
+	CreatorPrincipalArn string
 }
 
 // ClusterVersionUpdate is the UpdateClusterVersion request.
@@ -178,6 +181,14 @@ type NodegroupScalingConfig struct {
 	MinSize     int
 	MaxSize     int
 	DesiredSize int
+}
+
+// NodegroupScalingUpdate is a partial scaling change for UpdateNodegroupConfig.
+// Only the non-nil sizes change; the rest keep their current values.
+type NodegroupScalingUpdate struct {
+	MinSize     *int
+	MaxSize     *int
+	DesiredSize *int
 }
 
 // Taint is a Kubernetes taint applied to a managed node group's nodes. Effect
@@ -223,13 +234,24 @@ type NodegroupConfig struct {
 	DiskSize       int
 	Version        string
 	ReleaseVersion string
-	ScalingConfig  NodegroupScalingConfig
-	UpdateConfig   NodegroupUpdateConfig
-	Labels         map[string]string
-	Taints         []Taint
-	Tags           map[string]string
+	// ScalingConfig is optional; nil gets the EKS default of min 1, max 2,
+	// desired 2.
+	ScalingConfig *NodegroupScalingConfig
+	UpdateConfig  NodegroupUpdateConfig
+	Labels        map[string]string
+	Taints        []Taint
+	Tags          map[string]string
 	// LaunchTemplate is optional; when set, it names the EC2 launch template
 	// backing the node group's instances.
+	LaunchTemplate *LaunchTemplateSpecification
+}
+
+// NodegroupVersionUpdate is the UpdateNodegroupVersion request. An empty
+// Version means the cluster version. LaunchTemplate, when set, moves the
+// nodegroup to another version of the launch template it already uses.
+type NodegroupVersionUpdate struct {
+	Version        string
+	ReleaseVersion string
 	LaunchTemplate *LaunchTemplateSpecification
 }
 
@@ -261,11 +283,11 @@ type Nodegroup struct {
 }
 
 // NodegroupConfigUpdate carries the mutable fields UpdateNodegroupConfig
-// applies. Scaling, when non-nil, is the already-merged target sizing (the
-// caller overlays partial requests). Label and taint changes are expressed as
+// applies. Scaling, when non-nil, names the sizes to change; they are merged
+// onto the current config and the result is validated. Label and taint changes are expressed as
 // add/update and remove deltas, matching the real EKS request shape.
 type NodegroupConfigUpdate struct {
-	Scaling           *NodegroupScalingConfig
+	Scaling           *NodegroupScalingUpdate
 	UpdateConfig      *NodegroupUpdateConfig
 	AddOrUpdateLabels map[string]string
 	RemoveLabels      []string
@@ -393,6 +415,10 @@ type AccessEntry struct {
 	ModifiedAt         time.Time
 	ClientRequestToken string
 	Policies           []AssociatedAccessPolicy
+	// AutoCreated marks a node entry EKS made for a managed nodegroup or a
+	// Fargate profile. EKS removes it when no nodegroup or profile of the
+	// cluster uses the role any more.
+	AutoCreated bool
 }
 
 // AccessPolicy is one entry of the fixed EKS access policy catalog.
@@ -480,7 +506,7 @@ type EKS interface {
 		upd NodegroupConfigUpdate,
 	) (*ClusterUpdate, error)
 	UpdateNodegroupVersion(
-		ctx context.Context, clusterName, nodegroupName, version, releaseVersion string,
+		ctx context.Context, clusterName, nodegroupName string, upd NodegroupVersionUpdate,
 	) (*ClusterUpdate, error)
 	DeleteNodegroup(ctx context.Context, clusterName, nodegroupName string) (*Nodegroup, error)
 

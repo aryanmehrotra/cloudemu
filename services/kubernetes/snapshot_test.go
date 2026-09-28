@@ -25,6 +25,8 @@ var clusterStatePersistedFields = map[string]struct{}{
 	"rv":              {}, // resourceVersion high-water mark (clusterSnapshot.RV)
 	"nextClusterIP":   {}, // Service ClusterIP allocator (clusterSnapshot.NextClusterIP)
 	"nextPodIP":       {}, // Pod IP allocator (clusterSnapshot.NextPodIP)
+	"managedNodes":    {}, // managed node pool flag (clusterSnapshot.ManagedNodes)
+	"nextNodeOrdinal": {}, // managed node IP allocator (clusterSnapshot.NextNodeOrdinal)
 	"namespaces":      {}, // typed store (clusterSnapshot.Namespaces)
 	"configMaps":      {}, // typed store (clusterSnapshot.ConfigMaps)
 	"pods":            {}, // typed store (clusterSnapshot.Pods)
@@ -35,6 +37,8 @@ var clusterStatePersistedFields = map[string]struct{}{
 	"pdbs":            {}, // typed store (clusterSnapshot.PDBs)
 	"endpoints":       {}, // typed store (clusterSnapshot.Endpoints)
 	"reg":             {}, // registry store items (clusterSnapshot.Registry)
+	"serverVersion":   {}, // /version body (clusterSnapshot.ServerVersion)
+	"pendingVersion":  {}, // folded into clusterSnapshot.ServerVersion (the target version)
 }
 
 // clusterStateRuntimeFields lists the ClusterState fields deliberately NOT
@@ -58,6 +62,7 @@ var clusterStateRuntimeFields = map[string]struct{}{
 	"wServices":            {}, // watch broadcaster, rebuilt fresh
 	"wDeployments":         {}, // watch broadcaster, rebuilt fresh
 	"wEndpoints":           {}, // watch broadcaster, rebuilt fresh
+	"watchFloor":           {}, // derived: set to the restored rv
 }
 
 // apiServerPersistedFields / apiServerRuntimeFields do the same classification

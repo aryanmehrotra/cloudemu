@@ -42,7 +42,17 @@ func createInput(form url.Values) cfn.CreateStackInput {
 		Capabilities: awsquery.ListStrings(form, "Capabilities.member"),
 
 		NotificationARNs: awsquery.ListStrings(form, "NotificationARNs.member"),
+
+		OnFailure:                   form.Get("OnFailure"),
+		DisableRollback:             formBool(form, "DisableRollback"),
+		EnableTerminationProtection: formBool(form, "EnableTerminationProtection"),
+		RetainExceptOnCreate:        formBool(form, "RetainExceptOnCreate"),
 	}
+}
+
+// formBool reads a boolean form field. Absent is false.
+func formBool(form url.Values, key string) bool {
+	return strings.EqualFold(form.Get(key), "true")
 }
 
 func updateInput(form url.Values) cfn.UpdateStackInput {
@@ -54,7 +64,10 @@ func updateInput(form url.Values) cfn.UpdateStackInput {
 		Tags:         parseTags(form),
 		Capabilities: awsquery.ListStrings(form, "Capabilities.member"),
 
-		NotificationARNs: updateNotificationARNs(form),
+		UsePreviousTemplate:  formBool(form, "UsePreviousTemplate"),
+		DisableRollback:      formBool(form, "DisableRollback"),
+		RetainExceptOnCreate: formBool(form, "RetainExceptOnCreate"),
+		NotificationARNs:     updateNotificationARNs(form),
 	}
 }
 
@@ -134,6 +147,13 @@ type updateStackResponse struct {
 	Meta    responseMetadata `xml:"ResponseMetadata"`
 }
 
+type continueUpdateRollbackResponse struct {
+	XMLName xml.Name         `xml:"ContinueUpdateRollbackResponse"`
+	Xmlns   string           `xml:"xmlns,attr"`
+	Result  struct{}         `xml:"ContinueUpdateRollbackResult"`
+	Meta    responseMetadata `xml:"ResponseMetadata"`
+}
+
 type deleteStackResponse struct {
 	XMLName xml.Name         `xml:"DeleteStackResponse"`
 	Xmlns   string           `xml:"xmlns,attr"`
@@ -173,6 +193,11 @@ type stackXML struct {
 	Tags              []tagXML       `xml:"Tags>member,omitempty"`
 	Capabilities      []string       `xml:"Capabilities>member,omitempty"`
 	NotificationARNs  []string       `xml:"NotificationARNs>member,omitempty"`
+	ChangeSetID       string         `xml:"ChangeSetId,omitempty"`
+
+	EnableTerminationProtection bool   `xml:"EnableTerminationProtection"`
+	RetainExceptOnCreate        bool   `xml:"RetainExceptOnCreate"`
+	DeletionMode                string `xml:"DeletionMode,omitempty"`
 }
 
 type describeStacksResponse struct {
@@ -292,14 +317,39 @@ type validateTemplateResponse struct {
 	Meta responseMetadata `xml:"ResponseMetadata"`
 }
 
+type parameterDeclarationXML struct {
+	ParameterKey  string  `xml:"ParameterKey"`
+	DefaultValue  *string `xml:"DefaultValue,omitempty"`
+	ParameterType string  `xml:"ParameterType"`
+	NoEcho        bool    `xml:"NoEcho"`
+	Description   string  `xml:"Description,omitempty"`
+}
+
+type getTemplateSummaryResponse struct {
+	XMLName xml.Name `xml:"GetTemplateSummaryResponse"`
+	Xmlns   string   `xml:"xmlns,attr"`
+	Result  struct {
+		Parameters         []parameterDeclarationXML `xml:"Parameters>member"`
+		Description        string                    `xml:"Description,omitempty"`
+		Capabilities       []string                  `xml:"Capabilities>member,omitempty"`
+		CapabilitiesReason string                    `xml:"CapabilitiesReason,omitempty"`
+		ResourceTypes      []string                  `xml:"ResourceTypes>member"`
+		Version            string                    `xml:"Version,omitempty"`
+		DeclaredTransforms []string                  `xml:"DeclaredTransforms>member"`
+	} `xml:"GetTemplateSummaryResult"`
+	Meta responseMetadata `xml:"ResponseMetadata"`
+}
+
 // --- mapping helpers ---
 
 func toStackXML(s *cfn.Stack) stackXML {
 	x := stackXML{
 		StackID: s.ID, StackName: s.Name, Description: s.Description,
 		CreationTime: isoTime(s.CreationTime), LastUpdatedTime: isoTime(s.LastUpdated),
-		StackStatus: s.Status, StackStatusReason: s.StatusReason,
-		Capabilities: s.Capabilities, NotificationARNs: s.NotificationARNs,
+		StackStatus: s.Status, StackStatusReason: s.StatusReason, DisableRollback: s.DisableRollback,
+		Capabilities: s.Capabilities, NotificationARNs: s.NotificationARNs, ChangeSetID: s.ChangeSetID,
+		DeletionTime: isoTime(s.DeletionTime), EnableTerminationProtection: s.EnableTerminationProtection,
+		RetainExceptOnCreate: s.RetainExceptOnCreate, DeletionMode: s.DeletionMode,
 	}
 
 	for _, p := range s.Parameters {

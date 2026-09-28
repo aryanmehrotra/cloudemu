@@ -15,9 +15,9 @@ code does not implement. Machine-readable: [`coverage.json`](./coverage.json).
 | `acm` | [ACM](./aws/acm.md) | - | - | - | 17 |
 | `aks` | - | [AKS](./azure/aks.md) | - | - | 18 |
 | `aoss` | [AOSS](./aws/aoss.md) | - | - | - | 18 |
-| `apigateway` | [APIGateway](./aws/apigateway.md) | - | - | - | 29 |
+| `apigateway` | [APIGateway](./aws/apigateway.md) | - | - | - | 50 |
 | `apigatewaygcp` | - | - | [APIGateway](./gcp/apigateway.md) | - | 16 |
-| `apigatewayv2` | [APIGatewayV2](./aws/apigatewayv2.md) | - | - | - | 20 |
+| `apigatewayv2` | [APIGatewayV2](./aws/apigatewayv2.md) | - | - | - | 28 |
 | `apimanagement` | - | [APIManagement](./azure/apimanagement.md) | - | - | 30 |
 | `appconfiguration` | - | [AppConfiguration](./azure/appconfiguration.md) | - | - | 9 |
 | `appflow` | [AppFlow](./aws/appflow.md) | - | - | - | 14 |
@@ -26,7 +26,7 @@ code does not implement. Machine-readable: [`coverage.json`](./coverage.json).
 | `apprunner` | [AppRunner](./aws/apprunner.md) | - | - | - | 29 |
 | `appsync` | [AppSync](./aws/appsync.md) | - | - | - | 17 |
 | `aps` | [APS](./aws/aps.md) | - | - | - | 21 |
-| `athena` | [Athena](./aws/athena.md) | - | - | - | 23 |
+| `athena` | [Athena](./aws/athena.md) | - | - | - | 26 |
 | `azureai` | - | [AI](./azure/ai.md) | - | - | 92 |
 | `azurefirewall` | - | [Firewall](./azure/firewall.md) | - | - | 8 |
 | `azuresearch` | - | [Search](./azure/search.md) | - | - | 53 |
@@ -36,7 +36,7 @@ code does not implement. Machine-readable: [`coverage.json`](./coverage.json).
 | `batch` | [Batch](./aws/batch.md) | - | - | - | 14 |
 | `batch-azure` | - | [Batch](./azure/batch.md) | - | - | 17 |
 | `bedrock` | [Bedrock](./aws/bedrock.md) | - | - | - | 65 |
-| `bedrockagent` | [BedrockAgent](./aws/bedrockagent.md) | - | - | - | 29 |
+| `bedrockagent` | [BedrockAgent](./aws/bedrockagent.md) | - | - | - | 32 |
 | `bedrockagentruntime` | [BedrockAgentRuntime](./aws/bedrockagentruntime.md) | - | - | - | 3 |
 | `bigquery` | - | - | [BigQuery](./gcp/bigquery.md) | - | 12 |
 | `bigtable` | - | - | [Bigtable](./gcp/bigtable.md) | - | 38 |
@@ -47,7 +47,7 @@ code does not implement. Machine-readable: [`coverage.json`](./coverage.json).
 | `cloudasset` | - | - | [Cloudasset](./gcp/cloudasset.md) | - | 11 |
 | `cloudbilling` | - | - | [Cloudbilling](./gcp/cloudbilling.md) | - | 14 |
 | `clouddeploy` | - | - | [CloudDeploy](./gcp/clouddeploy.md) | - | 11 |
-| `cloudformation` | [CloudFormation](./aws/cloudformation.md) | - | - | - | 10 |
+| `cloudformation` | [CloudFormation](./aws/cloudformation.md) | - | - | - | 22 |
 | `cloudfront` | [CloudFront](./aws/cloudfront.md) | - | - | - | 11 |
 | `cloudids` | - | - | [CloudIDS](./gcp/cloudids.md) | - | 6 |
 | `cloudrun` | - | - | [CloudRun](./gcp/cloudrun.md) | - | 18 |
@@ -55,7 +55,7 @@ code does not implement. Machine-readable: [`coverage.json`](./coverage.json).
 | `cloudtasks` | - | - | [CloudTasks](./gcp/cloudtasks.md) | - | 11 |
 | `cloudtrail` | [CloudTrail](./aws/cloudtrail.md) | - | - | - | 60 |
 | `codeartifact` | [CodeArtifact](./aws/codeartifact.md) | - | - | - | 15 |
-| `cognito` | [Cognito](./aws/cognito.md) | - | - | - | 18 |
+| `cognito` | [Cognito](./aws/cognito.md) | - | - | - | 29 |
 | `communication` | - | [Communication](./azure/communication.md) | - | - | 10 |
 | `composer` | - | - | [Composer](./gcp/composer.md) | - | 6 |
 | `compute` | [EC2](./aws/ec2.md) | [VirtualMachines](./azure/virtualmachines.md) | [GCE](./gcp/gce.md) | - | 37 |
@@ -116,6 +116,7 @@ code does not implement. Machine-readable: [`coverage.json`](./coverage.json).
 | `location` | [Location](./aws/location.md) | - | - | - | 28 |
 | `locks` | - | [Locks](./azure/locks.md) | - | - | 4 |
 | `logging` | [CloudWatchLogs](./aws/cloudwatchlogs.md) | [LogAnalytics](./azure/loganalytics.md) | [CloudLogging](./gcp/cloudlogging.md) | - | 17 |
+| `logic` | - | [Logic](./azure/logic.md) | - | - | 14 |
 | `lro` | - | - | [LRO](./gcp/lro.md) | - | 1 |
 | `managedcassandra` | - | [ManagedCassandra](./azure/managedcassandra.md) | - | - | 15 |
 | `managedgrafana` | - | [ManagedGrafana](./azure/managedgrafana.md) | - | - | 8 |

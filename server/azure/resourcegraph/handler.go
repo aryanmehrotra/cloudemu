@@ -495,6 +495,7 @@ var portableToAzureTypeMap = map[string]string{ //nolint:gochecknoglobals // sta
 	"recoveryservices/Vault":              "microsoft.recoveryservices/vaults",
 	"iothub/IotHub":                       "microsoft.devices/iothubs",
 	"apimanagement/Service":               "microsoft.apimanagement/service",
+	"logic/Workflow":                      "microsoft.logic/workflows",
 }
 
 func portableToAzureType(service, typ string) string {

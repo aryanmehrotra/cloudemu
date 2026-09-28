@@ -101,6 +101,7 @@ const (
 	azureTypeRecovery   = "microsoft.recoveryservices/vaults"
 	azureTypeIoTHub     = "microsoft.devices/iothubs"
 	azureTypeAPIM       = "microsoft.apimanagement/service"
+	azureTypeLogicWf    = "microsoft.logic/workflows"
 )
 
 // Portable service identifiers as emitted by the resourcediscovery walkers.
@@ -147,6 +148,7 @@ const (
 	portableRecovery     = "recoveryservices"
 	portableIoTHub       = "iothub"
 	portableAPIM         = "apimanagement"
+	portableLogic        = "logic"
 )
 
 // parsedKQL is the result of KQL parsing: an engine Query plus the limit
@@ -448,6 +450,7 @@ var azureToPortableType = map[string]portableResourceType{ //nolint:gochecknoglo
 	azureTypeRecovery:   {portableRecovery, "Vault"},
 	azureTypeIoTHub:     {portableIoTHub, "IotHub"},
 	azureTypeAPIM:       {portableAPIM, "Service"},
+	azureTypeLogicWf:    {portableLogic, "Workflow"},
 }
 
 // mapAzureType translates a fully-qualified Azure resource type to the
